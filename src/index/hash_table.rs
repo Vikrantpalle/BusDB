@@ -81,8 +81,8 @@ impl Hash for HashTable {
             table: self,  
             page: None,
             on_page_end: |i| {
-                if !i.page.as_ref().unwrap().borrow().has_next() { return true;}
-                i.block_num = Some(i.page.as_ref().unwrap().borrow().get_next().unwrap() as u64);
+                if !i.page.as_ref().unwrap().read().unwrap().has_next() { return true;}
+                i.block_num = Some(i.page.as_ref().unwrap().read().unwrap().get_next().unwrap() as u64);
                 i.tup_idx = 0;
                 false 
             } 
@@ -97,19 +97,28 @@ impl Hash for HashTable {
         }
         let block_num = self.keys[key as usize].unwrap();
         let mut page = p_buf.fetch((self.id as u64)<<32 | (block_num as u64 & 0xFFFFFFFF));
-        let mut has_next = page.borrow().has_next();
-        while has_next {
-            let next = page.borrow().get_next().unwrap();
-            page = p_buf.fetch((self.id as u64)<<32 | (next as u64 & 0xFFFFFFFF));
-            has_next = page.borrow().has_next();
+        let mut next;
+        {
+            let page_read = page.read().unwrap();
+            next = page_read.get_next();
+            drop(page_read);
         }
-        let mut p = page.borrow_mut();
+        while next.is_some() {
+            page = p_buf.fetch((self.id as u64)<<32 | (next.unwrap() as u64 & 0xFFFFFFFF));
+            {
+                let page_read = page.read().unwrap();
+                next = page_read.get_next();
+                drop(page_read);
+            }
+        }
+        let mut p = page.write().unwrap();
         let bind = p.add(val.to_vec(), &self.schema);
         match bind {
             Some(_) => Some(()),
             None => {
                 self.append_block().unwrap();
                 p.set_next(self.num_blocks - 1);
+                drop(p);
                 self.insert(p_buf, key, val)
             }
         }

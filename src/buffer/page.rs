@@ -92,6 +92,7 @@ impl Page {
     }
 
     pub fn get_next(&self) -> Option<u32> {
+        if !self.has_next() { return None; }
         let Some(b) = &self.block else { return None };
         Some(b.get_next())
     }

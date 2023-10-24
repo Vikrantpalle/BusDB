@@ -1,30 +1,54 @@
-use nom::{bytes::complete::{tag_no_case, tag}, IResult, sequence::{pair, preceded, delimited, separated_pair}, character::complete::alpha1, multi::separated_list1, combinator::map};
+use nom::{bytes::complete::{tag_no_case, tag}, IResult, sequence::{preceded, delimited, separated_pair}, character::complete::{alpha1, alphanumeric1}, multi::separated_list1, branch::alt};
 
-use crate::buffer::tuple::{Table, DatumTypes};
+use crate::{buffer::{tuple::{Table, DatumTypes, File, Datum, TupleOps, Operator}, ClockBuffer}, optree::Select};
 
-fn parse_table_schema(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-    Ok(delimited(tag("("), separated_list1(tag(","), separated_pair(alpha1, tag(" "), alpha1)), tag(")"))(input)?)
+pub fn parse_create_table(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockBuffer) -> Option<()>> {
+    let (input, name) = preceded(tag_no_case("CREATE TABLE "), alpha1)(input)?;
+    let (input, schema) = delimited(tag("("), separated_list1(tag(","), separated_pair(alpha1, tag(" "), alpha1)), tag(")"))(input)?;
+    
+    Ok((input, move |_buf: &mut ClockBuffer| {
+        Table::create(name.to_string(), schema.iter().map(|(col, typ)| ((*col).to_string(), DatumTypes::parse(typ))).collect());
+        Table::new(name.to_string());
+        Some(())
+    }))
 }
 
-pub fn parse_create_table(input: &str) -> IResult<&str, (&str, Vec<(&str, &str)>)> {
-    Ok(pair(preceded(tag_no_case("CREATE TABLE "), alpha1), parse_table_schema)(input)?)
+pub fn parse_select(input: &str) -> IResult<&str, Select> {
+    let (input, _cols) = preceded(tag_no_case("SELECT "), separated_list1(tag(","), alt((tag("*"), alpha1))))(input)?;
+    let (input, name) = preceded(tag_no_case(" FROM "), alpha1)(input)?;
+
+    let table = Table::new(name.to_string());
+    Ok((input, Select::new(table, |_| true)))
 }
 
-impl Table {
-    pub fn parse(input: &str) -> IResult<&str, Self> {
-        Ok(map(parse_create_table, |(_name, schema)| {
-            Self::create(7, schema.iter().map(|(col, typ)| ((*col).to_string(), DatumTypes::parse(typ))).collect());
-            Self::new(7)
-        })(input)?)
-    }
+pub fn parse_insert(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockBuffer) -> Option<()>>  {
+    let (input, name) = preceded(tag_no_case("INSERT INTO "), alpha1)(input)?;
+    let (input, values) = preceded(tag_no_case(" VALUES"), delimited(tag("("), separated_list1(tag(","), alphanumeric1), tag(")")))(input)?;
+    
+    Ok((input, move |buf: &mut ClockBuffer| {
+        let mut table = Table::new(name.to_string());
+        let schema = table.get_schema();
+        let tup = schema.iter().zip(values.iter()).map(|((_, typ), inp)| {
+            match typ {
+                DatumTypes::Int => Datum::Int((*inp).parse::<i32>().unwrap()),
+                DatumTypes::Float => Datum::Float((*inp).parse::<f32>().unwrap())
+            }
+        }).collect();
+        table.add(buf, tup)
+    }))    
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::buffer::tuple::{Table, DatumTypes};
-
-    #[test]
-    fn test_create_table() {
-        assert_eq!(Table::parse("CREATE TABLE Users(id INT)"), Ok(("", Table {id: 7, num_blocks: 1, schema: vec![("id".into(), DatumTypes::Int)]})));
-    } 
+pub fn parse(input: &str, buf: &mut ClockBuffer) -> i32 {
+    let res = parse_create_table(input);
+    if res.is_ok() { (res.unwrap().1)(buf); return 0; }
+    let res = parse_insert(input);
+    if res.is_ok() { (res.unwrap().1)(buf).unwrap(); return 0; }
+    let res = parse_select(input);
+    if res.is_ok() { return match res.unwrap().1.next(buf).unwrap()[0] {
+        Datum::Int(v) => v,
+        Datum::Float(_) => -1
+    }  }
+    return -1
 }
+
+

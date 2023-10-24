@@ -20,8 +20,8 @@ pub fn block_read_benchmark(c: &mut Criterion) {
 }
 
 pub fn seq_scan_benchmark(c: &mut Criterion) {
-    let t_id = 1011;
-        Table::create(t_id, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
+        let t_id = "test".to_string();
+        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
         let mut t = Table::new(t_id);
         let mut buf = ClockBuffer::new(1001);
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];

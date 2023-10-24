@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{fmt::Display, cell::RefCell, rc::Rc};
+use std::{fmt::Display, sync::{Arc, RwLock}};
 
 use crate::storage::disk_manager::{self, write_block};
 
@@ -32,7 +32,7 @@ pub struct ClockBuffer {
 
 impl Buffer for ClockBuffer {
 
-    type Item = Rc<RefCell<Page>>;
+    type Item = Arc<RwLock<Page>>;
 
     fn new(size: usize) -> Self {
         ClockBuffer {
@@ -62,10 +62,10 @@ impl Buffer for ClockBuffer {
         return None;
     }
 
-    fn fetch(&mut self, p_id: u64) -> Rc<RefCell<Page>> {
-        if let Some((idx, val)) = self.buf.iter().enumerate().find(|(_, p)| p.borrow().page_id == Some(p_id)) {
+    fn fetch(&mut self, p_id: u64) -> Self::Item {
+        if let Some((idx, val)) = self.buf.iter().enumerate().find(|(_, p)| p.read().unwrap().page_id == Some(p_id)) {
             self.vis[idx] = true;
-            return Rc::clone(val);
+            return Arc::clone(val);
         }
         let block = disk_manager::read_block(p_id);
         self.admit(
@@ -80,23 +80,24 @@ impl Buffer for ClockBuffer {
     }
 }
 
-pub struct PageStore(Vec<Rc<RefCell<Page>>>);
+pub struct PageStore(Vec<Arc<RwLock<Page>>>);
 
 impl Store for PageStore {
 
-    type Item = Rc<RefCell<Page>>;
+    type Item = Arc<RwLock<Page>>;
 
     fn new(size: usize) -> Self{
-        PageStore((0..size).into_iter().map(|_| Rc::new(RefCell::new(Page::default()))).collect())
+        PageStore((0..size).into_iter().map(|_| Arc::new(RwLock::new(Page::default()))).collect())
     }
 
     fn add(&mut self, idx: usize, page: Page) -> Self::Item {
-        self.0[idx].replace(page);
-        Rc::clone(&self.0[idx])
+        let mut p = self.0[idx].write().unwrap();
+        *p = page;
+        Arc::clone(&self.0[idx])
     }
 
     fn remove(&mut self, idx: usize) {
-        let mut p = self.0[idx].borrow_mut();
+        let mut p = self.0[idx].write().unwrap();
         if p.page_id.is_some() && p.is_dirty() {
             p.toggle_dirty();
             write_block(p.page_id.unwrap(), p.block.as_ref().unwrap());
@@ -106,13 +107,13 @@ impl Store for PageStore {
 }
 
 impl PageStore {
-    fn iter(&self) -> impl Iterator<Item = &Rc<RefCell<Page>>> {
+    fn iter(&self) -> impl Iterator<Item = &Arc<RwLock<Page>>> {
         self.0.iter()
     }
 }
 
 impl Display for PageStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.iter().map(|p| p.borrow().page_id).into_iter()).finish()
+        f.debug_list().entries(self.iter().map(|p| p.read().unwrap().page_id).into_iter()).finish()
     }
 }

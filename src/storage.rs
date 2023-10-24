@@ -6,7 +6,7 @@ use serde_with::{serde_as, Bytes};
 pub const BLCKSIZ: usize = 8 * 1024;
 pub const DATSIZ: usize = 8171;
 pub const LOCSIZ: u16 = 2;
-pub const BASE_PATH: &str = "C:/Users/vikra/rustDB";
+pub const BASE_PATH: &str = "C:/Users/vikra/rustDB/cache";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Flags {
@@ -16,7 +16,7 @@ pub enum Flags {
 
 pub mod disk_manager;
 pub mod utils;
-
+pub mod folder;
 
 
 #[serde_as]
