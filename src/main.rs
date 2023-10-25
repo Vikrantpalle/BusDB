@@ -12,7 +12,11 @@ struct AppState {
 #[get("/query")]
 async fn query(data: web::Data<AppState>, query: String) -> impl Responder {
     let r = parse(&query, &mut data.buf.lock().unwrap());
-    HttpResponse::Ok().body(r.to_string())
+    match r {
+        Ok(Some(t)) => HttpResponse::Ok().json(t),
+        Ok(None) => HttpResponse::Ok().body("Success"),
+        Err(_) => HttpResponse::Ok().body("Failed")
+    }
 }
 
 #[actix_web::main]

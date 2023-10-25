@@ -1,6 +1,6 @@
 use nom::{bytes::complete::{tag_no_case, tag}, IResult, sequence::{preceded, delimited, separated_pair}, character::complete::{alpha1, alphanumeric1}, multi::separated_list1, branch::alt};
 
-use crate::{buffer::{tuple::{Table, DatumTypes, File, Datum, TupleOps, Operator}, ClockBuffer}, optree::Select};
+use crate::{buffer::{tuple::{Table, DatumTypes, File, Datum, TupleOps, Operator, Tuple}, ClockBuffer}, optree::Select};
 
 pub fn parse_create_table(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockBuffer) -> Option<()>> {
     let (input, name) = preceded(tag_no_case("CREATE TABLE "), alpha1)(input)?;
@@ -37,18 +37,26 @@ pub fn parse_insert(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockBuffer)
         table.add(buf, tup)
     }))    
 }
+pub struct ParseError;
 
-pub fn parse(input: &str, buf: &mut ClockBuffer) -> i32 {
+pub fn parse(input: &str, buf: &mut ClockBuffer) -> Result<Option<Vec<Tuple>>, ParseError> {
     let res = parse_create_table(input);
-    if res.is_ok() { (res.unwrap().1)(buf); return 0; }
+    if res.is_ok() { (res.unwrap().1)(buf); return Ok(None); }
     let res = parse_insert(input);
-    if res.is_ok() { (res.unwrap().1)(buf).unwrap(); return 0; }
+    if res.is_ok() { (res.unwrap().1)(buf).unwrap(); return Ok(None); }
     let res = parse_select(input);
-    if res.is_ok() { return match res.unwrap().1.next(buf).unwrap()[0] {
-        Datum::Int(v) => v,
-        Datum::Float(_) => -1
-    }  }
-    return -1
+    if res.is_ok() { return Ok(Some(res.unwrap().1.collect(buf))); }
+    return Err(ParseError)
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::parser::parse_create_table;
+
+    #[test]
+    fn test_table_create() {
+        let input = "create table Two(id INT,price INT)";
+        assert!(parse_create_table(input).is_ok())
+    }
+}
 

@@ -11,7 +11,7 @@ pub const HFILE_SUF: &str = "_h";
 pub type Tuple = Vec<Datum>;
 pub type Schema = Vec<(String, DatumTypes)>;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Datum {
     Int(i32),
     Float(f32)
