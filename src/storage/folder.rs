@@ -2,6 +2,8 @@ use std::io::{Write, Read};
 
 use serde::{Serialize, Deserialize};
 
+use crate::error::Error;
+
 use super::utils::{create_file, open_file};
 
 
@@ -13,17 +15,18 @@ pub struct Folder {
 
 impl Folder {
 
-    pub fn create() {
-        let mut file = create_file("folder").unwrap();
+    pub fn create() -> Result<(), Error> {
+        let mut file = create_file("folder")?;
         let folder = Folder { num_tables: 0, tables: vec![] };
-        file.write_all(&bincode::serialize(&folder).unwrap()).unwrap();
+        file.write_all(&bincode::serialize(&folder).unwrap())?;
+        Ok(())
     }
 
-    pub fn new() -> Self {
-        let mut folder = open_file("folder").unwrap();
+    pub fn new() -> Result<Self, Error> {
+        let mut folder = open_file("folder")?;
         let mut bytes = Vec::new();
         folder.read_to_end(&mut bytes).unwrap();
-        bincode::deserialize(&bytes).unwrap()
+        Ok(bincode::deserialize(&bytes).unwrap())
     }
 
     pub fn add(&mut self, table: String) {
@@ -32,16 +35,13 @@ impl Folder {
     }
 
     pub fn get(&self, table: &String) -> Option<u32> {
-        let t = self.tables.iter().find(|(n, _)| n == table);
-        match t {
-            Some((_, id)) => Some(id.clone()),
-            None => None
-        }
+        self.tables.iter().find(|(n, _)| n == table).map(|(_, id)| id.clone())
     }
 
-    pub fn save(&self) {
-        let mut file = create_file("folder").unwrap();
-        file.write_all(&bincode::serialize(self).unwrap()).unwrap();
+    pub fn save(&self) -> Result<(), Error> {
+        let mut file = create_file("folder")?;
+        file.write_all(&bincode::serialize(self).unwrap())?;
+        Ok(())
     }
 }
 
@@ -51,6 +51,6 @@ mod tests {
 
     #[test]
     pub fn test_folder_create() {
-        Folder::create();
+        Folder::create().unwrap();
     }
 }

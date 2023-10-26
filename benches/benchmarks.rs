@@ -21,12 +21,12 @@ pub fn block_read_benchmark(c: &mut Criterion) {
 
 pub fn seq_scan_benchmark(c: &mut Criterion) {
         let t_id = "test".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
-        let mut t = Table::new(t_id);
+        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = Table::new(t_id).unwrap();
         let mut buf = ClockBuffer::new(1001);
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];
         for _ in 0..100000 {
-            t.add(&mut buf, tuple);
+            t.add(&mut buf, tuple).unwrap();
             tuple = vec![Datum::Int(10), Datum::Int(10), Datum::Int(10), Datum::Int(10), Datum::Int(10), Datum::Int(10)];
         }
 

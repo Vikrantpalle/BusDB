@@ -1,4 +1,4 @@
-use crate::buffer::{tuple::{TableIter, Tuple, Table, Schema, Operator}, ClockBuffer};
+use crate::{buffer::{tuple::{TableIter, Tuple, Table, Schema, Operator}, ClockBuffer}, error::Error};
 
 use crate::index::hash_table::{HashTable, Hash, HashIter};
 
@@ -74,19 +74,19 @@ pub struct Join<R: Operator> {
 }
 
 impl<R: Operator<Item = Tuple>> Join<R> {
-    pub fn new<L: Operator<Item = Tuple>>(mut l: L, r: R, buf: &mut ClockBuffer, l_hash: fn(&Tuple) -> u16, r_hash: fn(&Tuple) -> u16) -> Self {
+    pub fn new<L: Operator<Item = Tuple>>(mut l: L, r: R, buf: &mut ClockBuffer, l_hash: fn(&Tuple) -> u16, r_hash: fn(&Tuple) -> u16) -> Result<Self, Error> {
         let h_id = 0;
         HashTable::create(h_id, l.get_schema());
         let mut h = HashTable::new(h_id);
         while let Some(t) = l.next(buf) {
-            h.insert(buf, l_hash(&t), t);
+            h.insert(buf, l_hash(&t), t)?;
         }
-        Join { h: TableIter { block_num: None, tup_idx: 0, table: h, page: None, on_page_end: |i| {
+        Ok(Join { h: TableIter { block_num: None, tup_idx: 0, table: h, page: None, on_page_end: |i| {
             if !i.page.as_ref().unwrap().read().unwrap().has_next() { return true;}
             i.block_num = Some(i.page.as_ref().unwrap().read().unwrap().get_next().unwrap() as u64);
             i.tup_idx = 0;
             false 
-        }  }, cur_r: None, r, r_hash }
+        }  }, cur_r: None, r, r_hash })
     }
 }
 
@@ -129,14 +129,14 @@ mod tests {
     #[test]
     fn test_select() {
         let t_id = "test_select".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
-        let mut t = Table::new(t_id);
+        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = Table::new(t_id).unwrap();
         let mut buf = ClockBuffer::new(1);
         let mut tuple;
         let mut res: Vec<Tuple> = Vec::new();
         for i in 0..100 {
             tuple = vec![Datum::Int(i), Datum::Int(i+2)];
-            t.add(&mut buf, tuple.to_vec());
+            t.add(&mut buf, tuple.to_vec()).unwrap();
             res.push(tuple);
         }
         let mut s_op = Select::new(t, |t| {
@@ -151,14 +151,14 @@ mod tests {
     #[test]
     fn test_project() {
         let t_id = "test_project".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
-        let mut t = Table::new(t_id);
+        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = Table::new(t_id).unwrap();
         let mut buf = ClockBuffer::new(1);
         let mut tuple;
         let mut res: Vec<Tuple> = Vec::new();
         for i in 0..100 {
             tuple = vec![Datum::Int(i), Datum::Int(i+2)];
-            t.add(&mut buf, tuple.to_vec());
+            t.add(&mut buf, tuple.to_vec()).unwrap();
             res.push(vec![tuple[0].clone()]);
         }
         let s_op = Select::new(t, |t| {
@@ -174,21 +174,21 @@ mod tests {
     #[test]
     fn test_join() {
         let t_id = "test_join".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
-        Table::create(t_id.clone()+"a", vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
-        let mut t = Table::new(t_id.clone());
+        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        Table::create(t_id.clone()+"a", vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = Table::new(t_id.clone()).unwrap();
         let mut buf = ClockBuffer::new(10);
         let mut tuple;
         for i in 0..1 {
             tuple = vec![Datum::Int(i), Datum::Int(i+1)];
-            t.add(&mut buf, tuple.to_vec());
+            t.add(&mut buf, tuple.to_vec()).unwrap();
         }
 
-        let mut t2 = Table::new(t_id+"a");
+        let mut t2 = Table::new(t_id+"a").unwrap();
         let mut tuple;
         for i in 0..1 {
             tuple = vec![Datum::Int(i), Datum::Int(i+1)];
-            t2.add(&mut buf, tuple.to_vec());
+            t2.add(&mut buf, tuple.to_vec()).unwrap();
         }
         let s1 = Select::new(t, |_| {true});
         let mut s_op = Join::new( 
@@ -203,7 +203,7 @@ mod tests {
                 Datum::Int(i) => i as u16,
                 _ => 0
             }
-        );
+        ).unwrap();
         assert_eq!(s_op.collect(&mut buf), vec![vec![Datum::Int(0),Datum::Int(1),Datum::Int(0),Datum::Int(1)]]);
     }
 }

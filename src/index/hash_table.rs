@@ -1,6 +1,6 @@
-use std::io::{Write, Read, Error};
+use std::io::{Write, Read};
 
-use crate::{storage::utils::{create_file, append_block, open_file}, buffer::{tuple::{HFILE_SUF, Tuple, TableIter, File, Schema}, ClockBuffer, Buffer}};
+use crate::{storage::utils::{create_file, append_block, open_file}, buffer::{tuple::{HFILE_SUF, Tuple, TableIter, File, Schema}, ClockBuffer, Buffer}, error::Error};
 use serde::{Serialize, Deserialize};
 
 const KEYNO: usize = 1 << 15;
@@ -57,24 +57,20 @@ pub trait HashIter {
 
 impl HashIter for TableIter<HashTable> {
     fn swap_key(&mut self, key: u16) {
-        let Some(block_num) = self.table.keys[key as usize] else {self.block_num = None; return;};
-        self.block_num = Some(block_num as u64);
+        self.block_num = self.table.keys[key as usize].map(|v| v as u64);
         self.tup_idx = 0;
     }
 }
 
 pub trait Hash {
     fn read<'a>(self, key: u16) -> TableIter<HashTable>;
-    fn insert(&mut self, p_buf: &mut ClockBuffer, key: u16, val: Tuple) -> Option<()>;
+    fn insert(&mut self, p_buf: &mut ClockBuffer, key: u16, val: Tuple) -> Result<(), Error>;
 }
 
 impl Hash for HashTable {
 
     fn read(self, key: u16) -> TableIter<HashTable> {
-        let block_num = match self.keys[key as usize] {
-            Some(v) => Some(v as u64),
-            None => None
-        };
+        let block_num = self.keys[key as usize].map(|v| v as u64);
         TableIter { 
             block_num, 
             tup_idx: 0, 
@@ -89,7 +85,7 @@ impl Hash for HashTable {
         }
     }
 
-    fn insert(&mut self, p_buf: &mut ClockBuffer, key: u16, val: Tuple) -> Option<()> {
+    fn insert(&mut self, p_buf: &mut ClockBuffer, key: u16, val: Tuple) -> Result<(), Error> {
         if self.keys[key as usize] == None {
             self.append_block().unwrap();
             self.keys[key as usize] = Some(self.num_blocks - 1);
@@ -114,8 +110,8 @@ impl Hash for HashTable {
         let mut p = page.write().unwrap();
         let bind = p.add(val.to_vec(), &self.schema);
         match bind {
-            Some(_) => Some(()),
-            None => {
+            Ok(_) => Ok(()),
+            Err(_) => {
                 self.append_block().unwrap();
                 p.set_next(self.num_blocks - 1);
                 drop(p);
@@ -140,8 +136,8 @@ mod tests {
         let val1 = vec![Datum::Int(10), Datum::Int(30)];
         let mut h = HashTable::new(t_id);
         let mut buf = ClockBuffer::new(10);
-        h.insert(&mut buf, key, val.to_vec());
-        h.insert(&mut buf, key+1, val1.to_vec());
+        h.insert(&mut buf, key, val.to_vec()).unwrap();
+        h.insert(&mut buf, key+1, val1.to_vec()).unwrap();
         let ret: Vec<Vec<Datum>> = h.read(key).collect(&mut buf);
         assert_eq!(ret, vec![val]);
     }

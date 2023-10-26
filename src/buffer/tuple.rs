@@ -2,7 +2,7 @@ use std::{io::{Write, Read}, sync::{RwLock, Arc}};
 
 use serde::{Serialize, Deserialize};
 
-use crate::storage::{utils::{create_file, open_file, append_block}, folder::Folder};
+use crate::{storage::{utils::{create_file, open_file, append_block}, folder::Folder}, error::{Error, PageError}};
 
 use super::{ClockBuffer, Buffer, page::{TupleCRUD, Page}};
 
@@ -32,11 +32,11 @@ impl DatumTypes {
         }
     }
 
-    pub fn parse(typ: &str) -> Self {
+    pub fn parse(typ: &str) -> Result<Self, Error> {
         match typ.to_ascii_uppercase().as_str() {
-            "INT" => Self::Int,
-            "FLOAT" => Self::Float,
-            _ => panic!()
+            "INT" => Ok(Self::Int),
+            "FLOAT" => Ok(Self::Float),
+            _ => Err(Error::ParseError)
         }
     }
 }
@@ -87,29 +87,30 @@ impl File for Table {
 }
 
 impl Table {
-    pub fn create(name: String, schema: Schema) {
-        let mut f = Folder::new();
+    pub fn create(name: String, schema: Schema) -> Result<(), Error> {
+        let mut f = Folder::new()?;
         f.add(name.clone());
         let id = f.get(&name).unwrap();
-        f.save();
-        create_file(&id.to_string()).unwrap();
-        append_block(&id.to_string()).unwrap();
+        f.save()?;
+        create_file(&id.to_string())?;
+        append_block(&id.to_string())?;
         let mut h_file = create_file(&(id.to_string() + HFILE_SUF)).expect("could not create header file");
         let table = Table {
             id,
             num_blocks: 1,
             schema
         };
-        h_file.write_all(&bincode::serialize(&table).unwrap()).unwrap();
+        h_file.write_all(&bincode::serialize(&table).unwrap())?;
+        Ok(())
     }
 
-    pub fn new(name: String) -> Self {
-        let f = Folder::new();
-        let id = f.get(&name).unwrap();
-        let mut h_file = open_file(&(id.to_string() + HFILE_SUF)).expect("could not open header file");
+    pub fn new(name: String) -> Result<Self, Error> {
+        let f = Folder::new()?;
+        let id = f.get(&name).ok_or(Error::InvalidName)?;
+        let mut h_file = open_file(&(id.to_string() + HFILE_SUF))?;
         let mut bytes = Vec::new();
         h_file.read_to_end(&mut bytes).unwrap();
-        bincode::deserialize(&bytes).unwrap()
+        Ok(bincode::deserialize(&bytes).unwrap())
     }
 }
 
@@ -124,42 +125,25 @@ impl Table {
 }
 
 pub trait TupleOps {
-    fn add(&mut self, page_buffer: &mut ClockBuffer, tuple: Tuple) -> Option<()>;
-    fn read(&self, page_buffer: &mut ClockBuffer, index: u16) -> Tuple;
+    fn add(&mut self, page_buffer: &mut ClockBuffer, tuple: Tuple) -> Result<(), Error>;
 }
 
 impl TupleOps for Table {
-    fn add(&mut self, p_buf: &mut ClockBuffer, tuple: Tuple) -> Option<()> {
+    fn add(&mut self, p_buf: &mut ClockBuffer, tuple: Tuple) -> Result<(), Error> {
         let page = p_buf.fetch(((self.id as u64)<<32) | ((self.num_blocks - 1) & 0xFFFFFFFF));
         let mut p = page.write().unwrap();
         
         let bind = p.add(tuple.to_vec(), &self.schema);
         drop(p);
         let ret = match bind {
-            Some(_) => Some(()),
-            None => {
+            Ok(()) => Ok(()),
+            Err(Error::PageError(PageError::OutOfBounds)) => {
                 self.append_block().unwrap();
                 self.add(p_buf, tuple)
-            }
+            },
+            Err(e) => Err(e)
         };
         ret
-    }
-
-    fn read(&self, p_buf: &mut ClockBuffer, index: u16) -> Vec<Datum> {
-        let page = p_buf.fetch((self.id as u64)<<32);
-        let p = page.read().unwrap(); // ! add block number 
-        let bytes= p.read(index, self.schema
-                                        .iter()
-                                        .map(|(_, x)| x.serialized_size())
-                                        .reduce(|acc, siz| acc + siz).unwrap() as u16).unwrap().unwrap();
-        self.schema
-                .iter()
-                .scan(0, |pre, (_, x)| {
-                    let siz = x.serialized_size();
-                    *pre += siz;
-                    Some(x.decode(&bytes[(*pre-siz) as usize ..*pre as usize]).expect("could not decode tuple element"))
-                })
-                .collect()
     }
 }
 
@@ -261,9 +245,9 @@ impl PageIter {
         PageIter { tup_idx: 0, tup_siz, schema: schema.to_vec(), page }
     }
 
-    pub fn nth(&mut self, n: usize) -> Result<Option<Tuple>, ()> {
+    pub fn nth(&mut self, n: usize) -> Result<Option<Tuple>, Error> {
         self.tup_idx += n as u16;
-        let Ok(bytes)= self.page.read().unwrap().read(self.tup_idx, self.tup_siz) else { return Err(()); };
+        let bytes = self.page.read().unwrap().read(self.tup_idx, self.tup_siz)?;
 
         let Some(bytes) = bytes else { return Ok(None); };
         
@@ -310,25 +294,25 @@ mod tests {
     #[test]
     fn test_table_create() {
         let t_name = "test_table_create".to_string();
-        Table::create(t_name.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
-        let t = Table::new(t_name);
+        Table::create(t_name.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let t = Table::new(t_name).unwrap();
         assert_eq!(t, Table{ id: t.get_id(), num_blocks: 1, schema: vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]});
     }
 
     #[test]
     fn test_page_itr_nth() {
         let t_id = "test_page_itr_nth".to_string();
-        Table::create(t_id.clone(), vec![("a".to_string(), DatumTypes::Int), ("b".to_string(), DatumTypes::Int)]);
-        let mut t = Table::new(t_id);
+        Table::create(t_id.clone(), vec![("a".to_string(), DatumTypes::Int), ("b".to_string(), DatumTypes::Int)]).unwrap();
+        let mut t = Table::new(t_id).unwrap();
         let mut buf = ClockBuffer::new(101);
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];
-        t.add(&mut buf, tuple);
+        t.add(&mut buf, tuple).unwrap();
         tuple = vec![Datum::Int(10), Datum::Int(30)];
-        t.add(&mut buf, tuple);
+        t.add(&mut buf, tuple).unwrap();
         let bind = buf.fetch((t.get_id() as u64) << 32);
         let mut itr = PageIter::iter(bind, &t.schema);
 
-        assert_eq!(itr.nth(1), Ok(Some(vec![Datum::Int(10), Datum::Int(30)])));
-        assert_eq!(itr.nth(1), Err(()));
+        assert_eq!(itr.nth(1).unwrap(), Some(vec![Datum::Int(10), Datum::Int(30)]));
+        assert!(itr.nth(1).is_err());
     }
 }
