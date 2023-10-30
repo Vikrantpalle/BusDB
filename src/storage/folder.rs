@@ -34,7 +34,7 @@ impl Folder {
         self.num_tables += 1;
     }
 
-    pub fn get(&self, table: &String) -> Option<u32> {
+    pub fn get(&self, table: &str) -> Option<u32> {
         self.tables.iter().find(|(n, _)| n == table).map(|(_, id)| id.clone())
     }
 

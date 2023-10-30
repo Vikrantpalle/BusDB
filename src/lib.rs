@@ -2,7 +2,7 @@
 
 pub mod storage;
 pub mod buffer;
-pub mod optree;
+pub mod operator;
 pub mod index;
-pub mod parser;
+pub mod compiler;
 pub mod error;

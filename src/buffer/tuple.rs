@@ -1,4 +1,4 @@
-use std::{io::{Write, Read}, sync::{RwLock, Arc}};
+use std::{io::{Write, Read}, sync::{RwLock, Arc}, fmt::Debug};
 
 use serde::{Serialize, Deserialize};
 
@@ -15,6 +15,31 @@ pub type Schema = Vec<(String, DatumTypes)>;
 pub enum Datum {
     Int(i32),
     Float(f32)
+}
+
+impl Hash for Datum {
+    fn hash(&self) -> u16 {
+        match self {
+            Self::Int(i) => i.hash(),
+            Self::Float(f) => f.hash()
+        }
+    }
+}
+
+impl Hash for i32 {
+    fn hash(&self) -> u16 {
+        *self as u16
+    }
+}
+
+impl Hash for f32 {
+    fn hash(&self) -> u16 {
+        *self as u16
+    }
+}
+
+pub trait Hash {
+    fn hash(&self) -> u16;
 }
 
 
@@ -104,9 +129,9 @@ impl Table {
         Ok(())
     }
 
-    pub fn new(name: String) -> Result<Self, Error> {
+    pub fn new(name: &str) -> Result<Self, Error> {
         let f = Folder::new()?;
-        let id = f.get(&name).ok_or(Error::InvalidName)?;
+        let id = f.get(name).ok_or(Error::InvalidName)?;
         let mut h_file = open_file(&(id.to_string() + HFILE_SUF))?;
         let mut bytes = Vec::new();
         h_file.read_to_end(&mut bytes).unwrap();
@@ -171,7 +196,7 @@ impl Table {
     }
 }
 
-pub trait Operator {
+pub trait Operate {
     type Item;
     fn next(&mut self, p_buf: &mut ClockBuffer) -> Option<Self::Item>;
     fn get_schema(&self) -> Schema;
@@ -196,7 +221,7 @@ pub trait Operator {
     } 
 }
 
-impl<T: File> Operator for TableIter<T> {
+impl<T: File> Operate for TableIter<T> {
 
     type Item = Tuple;
 
@@ -295,7 +320,7 @@ mod tests {
     fn test_table_create() {
         let t_name = "test_table_create".to_string();
         Table::create(t_name.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        let t = Table::new(t_name).unwrap();
+        let t = Table::new(&t_name).unwrap();
         assert_eq!(t, Table{ id: t.get_id(), num_blocks: 1, schema: vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]});
     }
 
@@ -303,7 +328,7 @@ mod tests {
     fn test_page_itr_nth() {
         let t_id = "test_page_itr_nth".to_string();
         Table::create(t_id.clone(), vec![("a".to_string(), DatumTypes::Int), ("b".to_string(), DatumTypes::Int)]).unwrap();
-        let mut t = Table::new(t_id).unwrap();
+        let mut t = Table::new(&t_id).unwrap();
         let mut buf = ClockBuffer::new(101);
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];
         t.add(&mut buf, tuple).unwrap();

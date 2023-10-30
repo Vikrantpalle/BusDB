@@ -3,7 +3,7 @@
 use std::{io::Result, sync::Mutex};
 
 use actix_web::{get, Responder, HttpResponse, HttpServer, App, web};
-use rustDB::{parser::parse, buffer::{ClockBuffer, Buffer}};
+use rustDB::{compiler::parse, buffer::{ClockBuffer, Buffer}};
 
 struct AppState {
     buf: Mutex<ClockBuffer>

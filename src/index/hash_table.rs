@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 
 const KEYNO: usize = 1 << 15;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct HashTable {
     id: u32,
     num_blocks: u32,
@@ -123,7 +123,7 @@ impl Hash for HashTable {
 
 #[cfg(test)]
 mod tests {
-    use crate::buffer::{tuple::{DatumTypes, Datum, Operator}, ClockBuffer, Buffer};
+    use crate::buffer::{tuple::{DatumTypes, Datum, Operate}, ClockBuffer, Buffer};
 
     use super::{HashTable, Hash};
 

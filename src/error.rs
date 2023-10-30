@@ -7,12 +7,14 @@ pub enum PageError {
     InvalidTuple
 }
 
-#[derive(Debug)]
+#[derive(Debug, )]
 pub enum Error {
     Io(IoError),
     PageError(PageError),
     ParseError,
-    InvalidName
+    InvalidName,
+    ColumnDoesNotExist,
+    TypeMismatch
 }
 
 impl From<IoError> for Error {
