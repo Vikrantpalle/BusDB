@@ -68,7 +68,7 @@ pub fn parse(input: &str, buf: &mut ClockBuffer) -> Result<Option<Vec<Tuple>>, E
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::parse_create_table;
+    use crate::compiler::parse_create_table;
 
     #[test]
     fn test_table_create() {
