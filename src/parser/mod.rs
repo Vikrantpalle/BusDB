@@ -1,6 +1,10 @@
 use nom::{bytes::complete::{tag_no_case, tag}, IResult, sequence::{preceded, delimited, separated_pair}, character::complete::{alpha1, alphanumeric1}, multi::separated_list1, branch::alt};
 
-use crate::{buffer::{tuple::{Table, DatumTypes, File, Datum, TupleOps, Operator, Tuple}, ClockBuffer}, optree::Select, error::Error};
+use crate::{buffer::{tuple::{Table, DatumTypes, File, Datum, TupleOps, Operate, Tuple}, ClockBuffer}, operator::Select, error::Error};
+
+pub mod ast;
+pub mod semantic;
+pub mod generator;
 
 pub fn parse_create_table(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockBuffer) -> Result<(), Error>> {
     let (input, name) = preceded(tag_no_case("CREATE TABLE "), alpha1)(input)?;
@@ -19,7 +23,7 @@ pub fn parse_create_table(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockB
         }).collect();
         err?;
         Table::create(name.to_string(),schema)?;
-        Table::new(name.to_string())?;
+        Table::new(name)?;
         Ok(())
     }))
 }
@@ -28,7 +32,7 @@ pub fn parse_select(input: &str) -> IResult<&str, Result<Select, Error>> {
     let (input, _cols) = preceded(tag_no_case("SELECT "), separated_list1(tag(","), alt((tag("*"), alpha1))))(input)?;
     let (input, name) = preceded(tag_no_case(" FROM "), alpha1)(input)?;
 
-    let table = Table::new(name.to_string());
+    let table = Table::new(name);
     match table {
         Ok(t) => Ok((input, Ok(Select::new(t, |_| true)))),
         Err(e) => Ok((input, Err(e)))
@@ -40,7 +44,7 @@ pub fn parse_insert(input: &str) -> IResult<&str, impl '_ + Fn(&mut ClockBuffer)
     let (input, values) = preceded(tag_no_case(" VALUES"), delimited(tag("("), separated_list1(tag(","), alphanumeric1), tag(")")))(input)?;
     
     Ok((input, move |buf: &mut ClockBuffer| {
-        let mut table = Table::new(name.to_string())?;
+        let mut table = Table::new(name)?;
         let schema = table.get_schema();
         let tup = schema.iter().zip(values.iter()).map(|((_, typ), inp)| {
             match typ {
