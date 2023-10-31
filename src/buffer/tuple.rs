@@ -120,6 +120,7 @@ impl Table {
         create_file(&id.to_string())?;
         append_block(&id.to_string())?;
         let mut h_file = create_file(&(id.to_string() + HFILE_SUF)).expect("could not create header file");
+        let schema = schema.into_iter().map(|t| (name.clone()+"."+&t.0, t.1)).collect();
         let table = Table {
             id,
             num_blocks: 1,
@@ -321,7 +322,7 @@ mod tests {
         let t_name = "test_table_create".to_string();
         Table::create(t_name.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
         let t = Table::new(&t_name).unwrap();
-        assert_eq!(t, Table{ id: t.get_id(), num_blocks: 1, schema: vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]});
+        assert_eq!(t, Table{ id: t.get_id(), num_blocks: 1, schema: vec![(t_name.clone()+"."+"a", DatumTypes::Int), (t_name.clone()+"."+"b", DatumTypes::Int)]});
     }
 
     #[test]

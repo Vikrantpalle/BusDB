@@ -1,3 +1,5 @@
+use rustDB_derive::Operate;
+
 use crate::{buffer::{tuple::{TableIter, Tuple, Table, Schema, Operate}, ClockBuffer}, error::Error};
 
 use crate::index::hash_table::{HashTable, Hash, HashIter};
@@ -6,32 +8,11 @@ use self::predicate::Predicate;
 
 pub mod predicate;
 
+#[derive(Operate)]
 pub enum Operator {
     Select(Box<Select>),
     Project(Box<Project>),
     Join(Box<Join>)
-}
-
-// todo: write macro
-impl Operate for Operator {
-
-    type Item = Tuple;
-
-    fn next(&mut self, p_buf: &mut ClockBuffer) -> Option<Self::Item> {
-        match self {
-            Self::Select(s) => s.next(p_buf),
-            Self::Project(p) => p.next(p_buf),
-            Self::Join(j) => j.next(p_buf)
-        }
-    }
-
-    fn get_schema(&self) -> Schema {
-        match self {
-            Self::Select(s) => s.get_schema(),
-            Self::Project(p) => p.get_schema(),
-            Self::Join(j) => j.get_schema()
-        }
-    }
 }
 
 pub struct Select {
@@ -201,7 +182,7 @@ mod tests {
                 _ => false
             }
         })));
-        let mut proj = Project::new(s_op, vec!["a".into()]);
+        let mut proj = Project::new(s_op, vec![t_id + "." + "a"]);
         assert_eq!(proj.collect(&mut buf), res);
     }
 

@@ -14,12 +14,12 @@ impl Field {
 
     pub fn get_type(&self) -> Result<DatumTypes, Error> {
         let t = Table::new(&self.table)?;
-        t.get_schema().iter().find(|(col, _)| col == &self.col).map(|(_, typ)| typ.clone()).ok_or(Error::ColumnDoesNotExist)
+        t.get_schema().iter().find(|(col, _)| col == &(self.table.clone() + "." + &self.col)).map(|(_, typ)| typ.clone()).ok_or(Error::ColumnDoesNotExist)
     }
 
     pub fn generate_hash(&self) -> Result<impl Fn(&Tuple) -> u16, Error> {
         let t = Table::new(&self.table)?;
-        let idx = t.get_schema().iter().enumerate().find(|(_, (col, _))| col == &self.col).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)?;
+        let idx = t.get_schema().iter().enumerate().find(|(_, (col, _))| col == &(self.table.clone() + "." + &self.col)).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)?;
         Ok(move |tuple: &Tuple| {
             tuple[idx].hash()
         })
