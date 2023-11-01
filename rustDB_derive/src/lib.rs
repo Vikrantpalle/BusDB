@@ -5,19 +5,6 @@ use quote::quote;
 fn impl_operate_macro(input: &syn::DeriveInput) -> TokenStream {
     let name = &input.ident;
     let syn::Data::Enum(data) = &input.data else {panic!()};
-    let operate_next_fields = data.variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        quote!(
-            Self::#variant_name(e) => e.next(buf)
-        )
-    });
-    let operate_next = quote!(
-        fn next(&mut self, buf: &mut ClockBuffer) -> Option<Self::Item> {
-            match self {
-                #(#operate_next_fields, )*
-            }
-        }
-    );
 
     let operate_get_schema_fields = data.variants.iter().map(|variant| {
         let variant_name = &variant.ident;
@@ -35,10 +22,6 @@ fn impl_operate_macro(input: &syn::DeriveInput) -> TokenStream {
 
     let gen = quote!(
         impl Operate for #name {
-            type Item = Tuple;
-
-            #operate_next
-
             #operate_get_schema
         }
     );

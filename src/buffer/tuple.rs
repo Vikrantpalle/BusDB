@@ -1,15 +1,16 @@
-use std::{io::{Write, Read}, sync::{RwLock, Arc}, fmt::Debug};
+use std::{io::{Write, Read}, sync::{RwLock, Arc}, fmt::Debug, ptr};
 
 use serde::{Serialize, Deserialize};
 
 use crate::{storage::{utils::{create_file, open_file, append_block}, folder::Folder}, error::{Error, PageError}};
 
-use super::{ClockBuffer, Buffer, page::{TupleCRUD, Page}};
+use super::{Buff, page::{TupleCRUD, Page}, Buffer, BufferInner, Clock};
 
 pub const HFILE_SUF: &str = "_h";
 
 pub type Tuple = Vec<Datum>;
 pub type Schema = Vec<(String, DatumTypes)>;
+pub type ClockBuffer = Buffer<RwLock<Page>, BufferInner<RwLock<Page>>, Clock>;
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Datum {
@@ -151,11 +152,11 @@ impl Table {
 }
 
 pub trait TupleOps {
-    fn add(&mut self, page_buffer: &mut ClockBuffer, tuple: Tuple) -> Result<(), Error>;
+    fn add(&mut self, page_buffer: Arc<ClockBuffer>, tuple: Tuple) -> Result<(), Error>;
 }
 
 impl TupleOps for Table {
-    fn add(&mut self, p_buf: &mut ClockBuffer, tuple: Tuple) -> Result<(), Error> {
+    fn add(&mut self, p_buf: Arc<ClockBuffer>, tuple: Tuple) -> Result<(), Error> {
         let page = p_buf.fetch(((self.id as u64)<<32) | ((self.num_blocks - 1) & 0xFFFFFFFF));
         let mut p = page.write().unwrap();
         
@@ -175,19 +176,21 @@ impl TupleOps for Table {
 
 pub struct TableIter<T: File> {
     pub block_num: Option<u64>,
+    pub buf: Arc<ClockBuffer>,
     pub tup_idx: u16,
     pub table: T,
-    pub page: Option<Arc<RwLock<Page>>>,
+    pub page: *const RwLock<Page>,
     pub on_page_end: fn(&mut TableIter<T>) -> bool
 }
 
 impl Table {
-    pub fn iter(&self) -> TableIter<Self> {
+    pub fn iter(&self, buf: Arc<ClockBuffer>) -> TableIter<Self> {
         TableIter { 
             block_num: Some(0), 
+            buf,
             tup_idx: 0, 
             table: self.clone(), 
-            page: None,
+            page: ptr::null(),
             on_page_end: |i| {
                 *i.block_num.as_mut().unwrap() += 1;
                 i.tup_idx = 0;
@@ -197,41 +200,28 @@ impl Table {
     }
 }
 
-pub trait Operate {
-    type Item;
-    fn next(&mut self, p_buf: &mut ClockBuffer) -> Option<Self::Item>;
+pub trait Operator: Iterator<Item = Tuple> {
     fn get_schema(&self) -> Schema;
-
-    fn collect(&mut self, p_buf: &mut ClockBuffer) -> Vec<Self::Item> {
-        let mut container = Vec::new();
-        let mut t = self.next(p_buf);
-        while t.is_some() {
-            container.push(t.unwrap());
-            t = self.next(p_buf);
-        }
-        container
-    }
-
-    fn for_each<F>(&mut self, mut func: F, p_buf: &mut ClockBuffer)
-    where F: FnMut(Self::Item) {
-        let mut t = self.next(p_buf);
-        while t.is_some() {
-            func(t.unwrap());
-            t = self.next(p_buf);
-        }
-    } 
 }
 
-impl<T: File> Operate for TableIter<T> {
+impl<T: File> Iterator for TableIter<T> {
 
     type Item = Tuple;
 
-    fn next(&mut self, p_buf: &mut ClockBuffer) -> Option<Self::Item>{
+    fn next(&mut self) -> Option<Self::Item>{
         let Some(block_num) = self.block_num else { return None; };
-        if self.page.is_none() || self.page.as_ref().unwrap().read().unwrap().page_id != Some(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)) {
-            self.page = Some(p_buf.fetch(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)))
+        if self.page.is_null() {
+            self.page = self.buf.fetch(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)) as *const RwLock<Page>;
+        } else {
+            let page_id;
+            let page = unsafe {self.page.as_ref().unwrap().read().unwrap()};
+            page_id = page.page_id;
+            drop(page);
+            if page_id != Some(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)) {
+                self.page = self.buf.fetch(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)) as *const RwLock<Page>;
+            }
         }
-        let tup = PageIter::iter(Arc::clone(&self.page.as_ref().unwrap()), &self.table.get_schema()).nth(self.tup_idx as usize);
+        let tup = unsafe {PageIter::iter(self.page.as_ref().unwrap(), &self.table.get_schema()).nth(self.tup_idx as usize)};
         match tup {
             Ok(Some(t)) => {
                 self.tup_idx += 1;
@@ -239,30 +229,26 @@ impl<T: File> Operate for TableIter<T> {
             },
             Ok(None) => {
                 self.tup_idx += 1;
-                self.next(p_buf)
+                self.next()
             },
             Err(_) => {
                 if (self.on_page_end)(self) { return None; }
-                self.page = Some(p_buf.fetch(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)));
-                self.next(p_buf)
+                self.page = self.buf.fetch(((self.table.get_id() as u64) << 32) | (block_num & 0xFFFFFFFF)) as *const RwLock<Page>;
+                self.next()
             }
         }
     }
-
-    fn get_schema(&self) -> Schema {
-        self.table.get_schema()
-    }
 }
 
-pub struct PageIter {
+pub struct PageIter<'a> {
     tup_idx: u16,
     tup_siz: u16,
     schema: Schema,
-    page: Arc<RwLock<Page>>
+    page: &'a RwLock<Page>
 }
 
-impl PageIter {
-    pub fn iter(page: Arc<RwLock<Page>>, schema: &Schema) -> PageIter {
+impl PageIter<'_> {
+    pub fn iter<'a>(page: &'a RwLock<Page>, schema: &Schema) -> PageIter<'a> {
         let tup_siz = schema
             .iter()
             .map(|(_, x)| x.serialized_size())
@@ -288,7 +274,7 @@ impl PageIter {
     }
 }
 
-impl Iterator for PageIter {
+impl Iterator for PageIter<'_> {
     type Item = Tuple;
     
     fn next(&mut self) -> Option<Self::Item> {
@@ -310,9 +296,9 @@ impl Iterator for PageIter {
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
+    use std::{vec, sync::Arc};
 
-    use crate::buffer::{ClockBuffer, Buffer, tuple::{PageIter, File}};
+    use crate::buffer::{tuple::{PageIter, File}, Buffer, Buff};
 
     use super::{Table, DatumTypes, TupleOps, Datum};
 
@@ -330,11 +316,11 @@ mod tests {
         let t_id = "test_page_itr_nth".to_string();
         Table::create(t_id.clone(), vec![("a".to_string(), DatumTypes::Int), ("b".to_string(), DatumTypes::Int)]).unwrap();
         let mut t = Table::new(&t_id).unwrap();
-        let mut buf = ClockBuffer::new(101);
+        let buf = Arc::new(Buffer::new(10));
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];
-        t.add(&mut buf, tuple).unwrap();
+        t.add(Arc::clone(&buf), tuple).unwrap();
         tuple = vec![Datum::Int(10), Datum::Int(30)];
-        t.add(&mut buf, tuple).unwrap();
+        t.add(Arc::clone(&buf), tuple).unwrap();
         let bind = buf.fetch((t.get_id() as u64) << 32);
         let mut itr = PageIter::iter(bind, &t.schema);
 

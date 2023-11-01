@@ -1,6 +1,6 @@
-use std::io::{Write, Read};
+use std::{io::{Write, Read}, sync::Arc, ptr};
 
-use crate::{storage::utils::{create_file, append_block, open_file}, buffer::{tuple::{HFILE_SUF, Tuple, TableIter, File, Schema}, ClockBuffer, Buffer}, error::Error};
+use crate::{storage::utils::{create_file, append_block, open_file}, buffer::{tuple::{HFILE_SUF, Tuple, TableIter, File, Schema, ClockBuffer}, Buff}, error::Error};
 use serde::{Serialize, Deserialize};
 
 const KEYNO: usize = 1 << 15;
@@ -63,36 +63,40 @@ impl HashIter for TableIter<HashTable> {
 }
 
 pub trait Hash {
-    fn read<'a>(self, key: u16) -> TableIter<HashTable>;
-    fn insert(&mut self, p_buf: &mut ClockBuffer, key: u16, val: Tuple) -> Result<(), Error>;
+    fn read<'a>(self, key: u16, buf: Arc<ClockBuffer>) -> TableIter<HashTable>;
+    fn insert(&mut self, key: u16, val: Tuple, buf: Arc<ClockBuffer>) -> Result<(), Error>;
 }
 
 impl Hash for HashTable {
 
-    fn read(self, key: u16) -> TableIter<HashTable> {
+    fn read<'a>(self, key: u16, buf: Arc<ClockBuffer>) -> TableIter<HashTable> {
         let block_num = self.keys[key as usize].map(|v| v as u64);
+        let buf = Arc::clone(&buf);
         TableIter { 
             block_num, 
+            buf,
             tup_idx: 0, 
             table: self,  
-            page: None,
+            page: ptr::null(),
             on_page_end: |i| {
-                if !i.page.as_ref().unwrap().read().unwrap().has_next() { return true;}
-                i.block_num = Some(i.page.as_ref().unwrap().read().unwrap().get_next().unwrap() as u64);
+                let page = unsafe { i.page.as_ref().unwrap().read().unwrap() };
+                if !page.has_next() { return true;}
+                i.block_num = Some(page.get_next().unwrap() as u64);
+                drop(page);
                 i.tup_idx = 0;
                 false 
             } 
         }
     }
 
-    fn insert(&mut self, p_buf: &mut ClockBuffer, key: u16, val: Tuple) -> Result<(), Error> {
+    fn insert(&mut self, key: u16, val: Tuple, buf: Arc<ClockBuffer>) -> Result<(), Error> {
         if self.keys[key as usize] == None {
             self.append_block().unwrap();
             self.keys[key as usize] = Some(self.num_blocks - 1);
-            return self.insert(p_buf, key, val);
+            return self.insert(key, val, Arc::clone(&buf))
         }
         let block_num = self.keys[key as usize].unwrap();
-        let mut page = p_buf.fetch((self.id as u64)<<32 | (block_num as u64 & 0xFFFFFFFF));
+        let mut page = buf.fetch((self.id as u64)<<32 | (block_num as u64 & 0xFFFFFFFF));
         let mut next;
         {
             let page_read = page.read().unwrap();
@@ -100,7 +104,7 @@ impl Hash for HashTable {
             drop(page_read);
         }
         while next.is_some() {
-            page = p_buf.fetch((self.id as u64)<<32 | (next.unwrap() as u64 & 0xFFFFFFFF));
+            page = buf.fetch((self.id as u64)<<32 | (next.unwrap() as u64 & 0xFFFFFFFF));
             {
                 let page_read = page.read().unwrap();
                 next = page_read.get_next();
@@ -115,7 +119,7 @@ impl Hash for HashTable {
                 self.append_block().unwrap();
                 p.set_next(self.num_blocks - 1);
                 drop(p);
-                self.insert(p_buf, key, val)
+                self.insert(key, val, Arc::clone(&buf))
             }
         }
     }
@@ -123,7 +127,9 @@ impl Hash for HashTable {
 
 #[cfg(test)]
 mod tests {
-    use crate::buffer::{tuple::{DatumTypes, Datum, Operate}, ClockBuffer, Buffer};
+    use std::sync::Arc;
+
+    use crate::buffer::{tuple::{DatumTypes, Datum}, Buffer};
 
     use super::{HashTable, Hash};
 
@@ -135,10 +141,10 @@ mod tests {
         let val = vec![Datum::Int(10), Datum::Int(20)];
         let val1 = vec![Datum::Int(10), Datum::Int(30)];
         let mut h = HashTable::new(t_id);
-        let mut buf = ClockBuffer::new(10);
-        h.insert(&mut buf, key, val.to_vec()).unwrap();
-        h.insert(&mut buf, key+1, val1.to_vec()).unwrap();
-        let ret: Vec<Vec<Datum>> = h.read(key).collect(&mut buf);
+        let buf = Arc::new(Buffer::new(10));
+        h.insert(key, val.to_vec(), Arc::clone(&buf)).unwrap();
+        h.insert(key+1, val1.to_vec(), Arc::clone(&buf)).unwrap();
+        let ret: Vec<Vec<Datum>> = h.read(key, Arc::clone(&buf)).collect();
         assert_eq!(ret, vec![val]);
     }
 }

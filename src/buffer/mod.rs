@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{fmt::Display, sync::{Arc, RwLock}};
+use std::{sync::{RwLock, Mutex}, marker::PhantomData, slice::Iter};
 
 use crate::storage::disk_manager::{self, write_block};
 
@@ -8,64 +8,107 @@ pub mod page;
 pub mod tuple;
 use page::*;
 
-pub trait Store {
+pub trait BuffInner<T> {
     type Item;
-    fn new(size: usize) -> Self;
-    fn add(&mut self, idx: usize,  page: Page) -> Self::Item;
-    fn remove(&mut self, idx: usize);
+    fn add(&self, idx: usize,  page: Self::Item) -> &T;
+    fn remove(&self, idx: usize);
+    fn iter(&self) -> Iter<'_, T>;
 }
 
-pub trait Buffer {
+pub trait Buff<T> {
     type Item;
-    fn new(size: usize) -> Self;
-    fn admit(&mut self, page: Page) -> Self::Item;
-    fn evict(&mut self) -> Option<usize>;
-    fn fetch(&mut self, page_id: u64) -> Self::Item;
-    fn flush(&mut self);
+    fn admit(&self, page: Self::Item) -> &T;
+    fn evict(&self) -> usize;
+    fn fetch(&self, page_id: u64) -> &T;
+    fn flush(&self);
 }
 
-pub struct ClockBuffer {
-    hand: usize,
-    vis: Vec<bool>,
-    buf: PageStore
+pub struct Buffer<T, U: BuffInner<T>,  V: Keeper> {
+    _marker: PhantomData<T>,
+    inner: U,
+    keeper: Mutex<V>,
+    size: usize
 }
 
-impl Buffer for ClockBuffer {
+impl Buffer<RwLock<Page>, BufferInner<RwLock<Page>>, Clock> {
+    pub fn new(size: usize) -> Self {
+        Self { _marker: PhantomData, inner: BufferInner::<RwLock<Page>>::new(size), keeper: Mutex::new(Clock::new(size)), size }
+    }
+}
 
-    type Item = Arc<RwLock<Page>>;
+pub struct BufferInner<T> {
+    data: Vec<T>
+}
 
+impl BufferInner<RwLock<Page>> {
     fn new(size: usize) -> Self {
-        ClockBuffer {
-            hand: 0,
-            vis: vec![true; size],
-            buf: PageStore::new(size)
-        }
+        Self { data: (0..size).into_iter().map(|_| RwLock::new(Page::new())).collect() }
+    }
+}
+
+pub trait Keeper {
+    fn add_hook(&mut self, idx: usize);
+    fn fetch_hook(&mut self, idx: usize);
+    fn evict(&mut self) -> usize; 
+}
+
+pub struct Clock {
+    hand: usize,
+    vis: Vec<bool>
+}
+
+impl Clock {
+    fn new(size: usize) -> Self {
+        Self { hand: 0, vis: vec![false; size] }
+    }
+}
+
+impl Keeper for Clock {
+    fn add_hook(&mut self, idx: usize) {
+        self.vis[idx] = true;
     }
 
-    fn admit(&mut self, page: Page) -> Self::Item {
-        let target_idx = self.evict().expect("No page could be evicted");
-        let res = self.buf.add(target_idx, page);
-        self.vis[target_idx] = true;
-        res
+    fn fetch_hook(&mut self, idx: usize) {
+        self.vis[idx] = true;
     }
 
-    fn evict(&mut self) -> Option<usize> {
+    fn evict(&mut self) -> usize {
         for i in (self.hand..self.vis.len()).into_iter().chain((0..self.hand).into_iter()).cycle(){
             if !self.vis[i] {
-                self.buf.remove(i); 
                 self.vis[i] = true; 
                 self.hand = i;
-                return Some(i);
+                break;
             }
             else {self.vis[i] = false;}
         };
-        return None;
+        self.hand
+    }
+}
+
+impl<U: BuffInner<RwLock<Page>, Item = Page>, V: Keeper> Buff<RwLock<Page>> for Buffer<RwLock<Page>, U, V> {
+
+    type Item = Page;
+
+    fn admit(&self, page: Page) -> &RwLock<Page> {
+        let target_idx = self.evict();
+        let res = self.inner.add(target_idx, page);
+        let mut keeper = self.keeper.lock().unwrap();
+        keeper.add_hook(target_idx);
+        res
     }
 
-    fn fetch(&mut self, p_id: u64) -> Self::Item {
-        if let Some((idx, val)) = self.buf.iter().enumerate().find(|(_, p)| p.read().unwrap().page_id == Some(p_id)) {
-            self.vis[idx] = true;
-            return Arc::clone(val);
+    fn evict(&self) -> usize {
+        let mut keeper = self.keeper.lock().unwrap();
+        let i = keeper.evict();
+        self.inner.remove(i); 
+        i
+    }
+
+    fn fetch(&self, p_id: u64) -> &RwLock<Page> {
+        if let Some((idx, val)) = self.inner.iter().enumerate().find(|(_, p)| p.read().unwrap().page_id == Some(p_id)) {
+            let mut keeper = self.keeper.lock().unwrap();
+            keeper.fetch_hook(idx);
+            return val;
         }
         let block = disk_manager::read_block(p_id);
         self.admit(
@@ -73,47 +116,33 @@ impl Buffer for ClockBuffer {
         )
     }
 
-    fn flush(&mut self) {
-        for i in 0..self.vis.len() {
-            self.buf.remove(i);
+    fn flush(&self) {
+        for i in 0..self.size {
+            self.inner.remove(i);
         };
     }
 }
 
-pub struct PageStore(Vec<Arc<RwLock<Page>>>);
+impl BuffInner<RwLock<Page>> for BufferInner<RwLock<Page>> {
 
-impl Store for PageStore {
+    type Item = Page;
 
-    type Item = Arc<RwLock<Page>>;
-
-    fn new(size: usize) -> Self{
-        PageStore((0..size).into_iter().map(|_| Arc::new(RwLock::new(Page::default()))).collect())
-    }
-
-    fn add(&mut self, idx: usize, page: Page) -> Self::Item {
-        let mut p = self.0[idx].write().unwrap();
+    fn add(&self, idx: usize, page: Self::Item) -> &RwLock<Page> {
+        let mut p = self.data[idx].write().unwrap();
         *p = page;
-        Arc::clone(&self.0[idx])
+        &self.data[idx]
     }
 
-    fn remove(&mut self, idx: usize) {
-        let mut p = self.0[idx].write().unwrap();
+    fn remove(&self, idx: usize) {
+        let mut p = self.data[idx].write().unwrap();
         if p.page_id.is_some() && p.is_dirty() {
             p.toggle_dirty();
             write_block(p.page_id.unwrap(), p.block.as_ref().unwrap());
         }
         p.page_id = None;
     }
-}
 
-impl PageStore {
-    fn iter(&self) -> impl Iterator<Item = &Arc<RwLock<Page>>> {
-        self.0.iter()
-    }
-}
-
-impl Display for PageStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.iter().map(|p| p.read().unwrap().page_id).into_iter()).finish()
+    fn iter(&self) -> Iter<'_, RwLock<Page>> {
+        self.data.iter()
     }
 }

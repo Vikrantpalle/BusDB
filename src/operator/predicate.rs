@@ -1,7 +1,7 @@
 use crate::{buffer::tuple::{DatumTypes, Table, File, Tuple, Hash}, error::Error};
 
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Field {
     pub table: String,
     pub col: String
@@ -26,7 +26,7 @@ impl Field {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Equal {
     pub l: Field,
     pub r: Field
@@ -42,7 +42,7 @@ impl Equal {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Predicate {
     Equal(Equal)
 }

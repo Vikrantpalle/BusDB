@@ -8,6 +8,12 @@ pub struct Page {
     pub block: Option<Block>
 }
 
+impl Page {
+    pub fn new() -> Self { 
+        Self { page_id: None, block: None }
+    }
+}
+
 pub trait TupleCRUD {
     fn write(&mut self, data: &[u8]) -> Result<(), Error>;
     fn read(&self, tup_idx: u16, tup_siz: u16) -> Result<Option<Vec<u8>>, Error>;
