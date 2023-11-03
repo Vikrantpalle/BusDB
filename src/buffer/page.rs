@@ -4,7 +4,7 @@ use super::tuple::{Tuple, Schema, DatumSerde};
 
 #[derive(Clone, Debug)]
 pub struct Page {
-    pub page_id: Option<u64>,
+    pub page_id: Option<u128>,
     pub block: Option<Block>
 }
 

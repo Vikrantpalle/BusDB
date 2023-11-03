@@ -1,7 +1,7 @@
 use std::{fs::remove_file, sync::Arc};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use rustDB::{storage::{utils::create_file, utils::append_block, disk_manager::read_block}, buffer::{tuple::{Table, DatumTypes, Datum, TupleOps}, Buffer}, operator::Select};
+use rustDB::{storage::{utils::create_file, utils::append_block, disk_manager::read_block, folder::Folder}, buffer::tuple::{RowTable, DatumTypes, Datum, TupleOps, PageBuffer}, operator::Select};
 
 
 
@@ -21,9 +21,9 @@ pub fn block_read_benchmark(c: &mut Criterion) {
 
 pub fn seq_scan_benchmark(c: &mut Criterion) {
         let t_id = "test".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        let mut t = Table::new(&t_id).unwrap();
-        let buf = Arc::new(Buffer::new(1001));
+        let f = Arc::new(Folder::new().unwrap());
+        let mut t = RowTable::create(f, t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let buf = Arc::new(PageBuffer::new(1001));
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];
         for _ in 0..100000 {
             t.add(Arc::clone(&buf), tuple).unwrap();

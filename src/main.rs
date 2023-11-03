@@ -3,15 +3,11 @@
 use std::{io::Result, sync::{Mutex, Arc}};
 
 use actix_web::{get, Responder, HttpResponse, HttpServer, App, web};
-use rustDB::{compiler::parse, buffer::{tuple::ClockBuffer, Buffer}};
-
-struct AppState {
-    buf: Mutex<Arc<ClockBuffer>>
-}
+use rustDB::{compiler::parse, buffer::tuple::PageBuffer, State, storage::folder::Folder};
 
 #[get("/query")]
-async fn query(data: web::Data<AppState>, query: String) -> impl Responder {
-    let r = parse(&query, Arc::clone(&data.buf.lock().unwrap()));
+async fn query(data: web::Data<State>, query: String) -> impl Responder {
+    let r = parse(&query, Arc::clone(&data.buf.lock().unwrap()), Arc::clone(&data.folder.lock().unwrap()));
     match r {
         Ok(Some(t)) => HttpResponse::Ok().json(t),
         Ok(None) => HttpResponse::Ok().body("Success"),
@@ -21,7 +17,7 @@ async fn query(data: web::Data<AppState>, query: String) -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> Result<()> {
-    let state = web::Data::new(AppState { buf: Mutex::new(Arc::new(Buffer::new(10)))});
+    let state = web::Data::new(State { folder: Mutex::new(Arc::new(Folder::new().unwrap())), buf: Mutex::new(Arc::new(PageBuffer::new(10)))});
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())

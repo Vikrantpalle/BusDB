@@ -1,51 +1,60 @@
-use std::{io::{Write, Read}, sync::Arc, ptr};
+use std::{sync::Arc, ptr};
 
-use crate::{storage::utils::{create_file, append_block, open_file}, buffer::{tuple::{HFILE_SUF, Tuple, TableIter, File, Schema, ClockBuffer}, Buff}, error::Error};
+use crate::{storage::{utils::append_block, folder::{Folder, TableInode}, disk_manager::SET_64}, buffer::{tuple::{Tuple, TableIter, Table, Schema, PageBuffer}, Buff}, error::Error};
 use serde::{Serialize, Deserialize};
 
 const KEYNO: usize = 1 << 15;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct HashTable {
-    id: u32,
+    inode: TableInode,
     num_blocks: u32,
     pub keys: Vec<Option<u32>>,
     schema: Schema
 }
 
-impl File for HashTable {
-    fn get_id(&self) -> u32 {
-        self.id
+impl Table for HashTable {
+    fn get_inode(&self) -> TableInode {
+        self.inode.clone()
+    }
+
+    fn set_inode(&mut self, inode: TableInode) {
+        self.inode = inode
     }
 
     fn get_schema(&self) -> Schema {
         self.schema.to_vec()
     }
+
+    fn set_schema(&mut self, schema: Schema) {
+        self.schema = schema
+    }
+}
+
+impl Default for HashTable {
+    fn default() -> Self {
+        HashTable {
+            inode: TableInode::new(0, 0),
+            num_blocks: 0,
+            keys: vec![None; KEYNO],
+            schema: vec![]
+        }
+    }
 }
 
 impl HashTable {
 
-    pub fn create(id: u32, schema: Schema) {
-        create_file(&id.to_string()).unwrap();
-        let mut h_file = create_file(&(id.to_string() + HFILE_SUF)).expect("could not create header file");
-        let table = HashTable {
-            id,
-            num_blocks: 0,
-            keys: vec![None; KEYNO],
-            schema
-        };
-        h_file.write_all(&bincode::serialize(&table).unwrap()).unwrap();
+    pub fn create(f: Arc<Folder>, name: &str, schema: Schema) -> Result<Self, Error> {
+        Ok(f.create_table(name, schema)?)
     }
 
-    pub fn new(id: u32) -> Self {
-        let mut h_file = open_file(&(id.to_string() + HFILE_SUF)).expect("could not open header file");
-        let mut bytes = Vec::new();
-        h_file.read_to_end(&mut bytes).unwrap();
-        bincode::deserialize(&bytes).unwrap()
+    pub fn new(name: String) -> Result<Self, Error> {
+        let f = Folder::new()?;
+        Ok((f.fetch_table(&name)?).ok_or(Error::TableDoesNotExist)?)
     }
 
     pub fn append_block(&mut self) -> Result<(), Error> {
-        append_block(&self.id.to_string()).unwrap();
+        append_block(&self.inode.data_ino.to_string()).unwrap();
         self.num_blocks += 1;
         Ok(())
     }
@@ -53,6 +62,20 @@ impl HashTable {
 
 pub trait HashIter {
     fn swap_key(&mut self, key: u16);
+}
+
+impl TableIter<HashTable> {
+    pub fn new(buf: Arc<PageBuffer>, table: HashTable) -> Self {
+        TableIter { block_num: None, buf: Arc::clone(&buf), tup_idx: 0, table, page: ptr::null_mut(), on_page_end: |i| {
+            let page = unsafe { i.page.as_ref().unwrap().read().unwrap() };
+            if !page.has_next() { return true;}
+            i.block_num = Some(page.get_next().unwrap() as u64);
+            drop(page);
+            i.tup_idx = 0;
+            false 
+            }
+        }
+    }
 }
 
 impl HashIter for TableIter<HashTable> {
@@ -63,13 +86,13 @@ impl HashIter for TableIter<HashTable> {
 }
 
 pub trait Hash {
-    fn read<'a>(self, key: u16, buf: Arc<ClockBuffer>) -> TableIter<HashTable>;
-    fn insert(&mut self, key: u16, val: Tuple, buf: Arc<ClockBuffer>) -> Result<(), Error>;
+    fn read<'a>(self, key: u16, buf: Arc<PageBuffer>) -> TableIter<HashTable>;
+    fn insert(&mut self, key: u16, val: Tuple, buf: Arc<PageBuffer>) -> Result<(), Error>;
 }
 
 impl Hash for HashTable {
 
-    fn read<'a>(self, key: u16, buf: Arc<ClockBuffer>) -> TableIter<HashTable> {
+    fn read<'a>(self, key: u16, buf: Arc<PageBuffer>) -> TableIter<HashTable> {
         let block_num = self.keys[key as usize].map(|v| v as u64);
         let buf = Arc::clone(&buf);
         TableIter { 
@@ -89,14 +112,14 @@ impl Hash for HashTable {
         }
     }
 
-    fn insert(&mut self, key: u16, val: Tuple, buf: Arc<ClockBuffer>) -> Result<(), Error> {
+    fn insert(&mut self, key: u16, val: Tuple, buf: Arc<PageBuffer>) -> Result<(), Error> {
         if self.keys[key as usize] == None {
             self.append_block().unwrap();
             self.keys[key as usize] = Some(self.num_blocks - 1);
             return self.insert(key, val, Arc::clone(&buf))
         }
         let block_num = self.keys[key as usize].unwrap();
-        let mut page = buf.fetch((self.id as u64)<<32 | (block_num as u64 & 0xFFFFFFFF));
+        let mut page = buf.fetch((self.inode.data_ino as u128)<<64 | (block_num as u128 & 0xFFFFFFFF));
         let mut next;
         {
             let page_read = page.read().unwrap();
@@ -104,7 +127,7 @@ impl Hash for HashTable {
             drop(page_read);
         }
         while next.is_some() {
-            page = buf.fetch((self.id as u64)<<32 | (next.unwrap() as u64 & 0xFFFFFFFF));
+            page = buf.fetch((self.inode.data_ino as u128)<<64 | (next.unwrap() as u128 & SET_64 as u128));
             {
                 let page_read = page.read().unwrap();
                 next = page_read.get_next();
@@ -129,19 +152,19 @@ impl Hash for HashTable {
 mod tests {
     use std::sync::Arc;
 
-    use crate::buffer::{tuple::{DatumTypes, Datum}, Buffer};
+    use crate::{buffer::tuple::{DatumTypes, Datum, PageBuffer}, storage::folder::Folder};
 
     use super::{HashTable, Hash};
 
     #[test]
     pub fn test_hash_table() {
-        let t_id = 6;
-        HashTable::create(t_id, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]);
+        let id = "hash_table".to_string();
+        let f = Arc::new(Folder::new().unwrap());
+        let mut h = HashTable::create(Arc::clone(&f), &id, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
         let key = 10;
         let val = vec![Datum::Int(10), Datum::Int(20)];
         let val1 = vec![Datum::Int(10), Datum::Int(30)];
-        let mut h = HashTable::new(t_id);
-        let buf = Arc::new(Buffer::new(10));
+        let buf = Arc::new(PageBuffer::new(10));
         h.insert(key, val.to_vec(), Arc::clone(&buf)).unwrap();
         h.insert(key+1, val1.to_vec(), Arc::clone(&buf)).unwrap();
         let ret: Vec<Vec<Datum>> = h.read(key, Arc::clone(&buf)).collect();

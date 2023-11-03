@@ -2,15 +2,17 @@
 
 use std::{sync::{RwLock, Mutex}, marker::PhantomData, slice::Iter};
 
-use crate::storage::disk_manager::{self, write_block};
+use crate::storage::{disk_manager::{self, write_block}, folder::HeadBuffer};
 
 pub mod page;
 pub mod tuple;
 use page::*;
 
+use self::tuple::Table;
+
 pub trait BuffInner<T> {
     type Item;
-    fn add(&self, idx: usize,  page: Self::Item) -> &T;
+    fn add(&self, idx: usize,  item: Self::Item) -> &T;
     fn remove(&self, idx: usize);
     fn iter(&self) -> Iter<'_, T>;
 }
@@ -19,7 +21,7 @@ pub trait Buff<T> {
     type Item;
     fn admit(&self, page: Self::Item) -> &T;
     fn evict(&self) -> usize;
-    fn fetch(&self, page_id: u64) -> &T;
+    fn fetch(&self, page_id: u128) -> &T;
     fn flush(&self);
 }
 
@@ -36,6 +38,12 @@ impl Buffer<RwLock<Page>, BufferInner<RwLock<Page>>, Clock> {
     }
 }
 
+impl HeadBuffer {
+    pub fn new(size: usize) -> Self {
+        Self { _marker: PhantomData, inner: BufferInner::<RwLock<Option<Box<dyn Table + Send + Sync>>>>::new(size), keeper: Mutex::new(Clock::new(size)), size}
+    }
+}
+
 pub struct BufferInner<T> {
     data: Vec<T>
 }
@@ -43,6 +51,12 @@ pub struct BufferInner<T> {
 impl BufferInner<RwLock<Page>> {
     fn new(size: usize) -> Self {
         Self { data: (0..size).into_iter().map(|_| RwLock::new(Page::new())).collect() }
+    }
+}
+
+impl BufferInner<RwLock<Option<Box<dyn Table + Send + Sync>>>> {
+    fn new(size: usize) -> Self {
+        Self { data: (0..size).into_iter().map(|_| RwLock::new(None)).collect() }
     }
 }
 
@@ -104,7 +118,7 @@ impl<U: BuffInner<RwLock<Page>, Item = Page>, V: Keeper> Buff<RwLock<Page>> for 
         i
     }
 
-    fn fetch(&self, p_id: u64) -> &RwLock<Page> {
+    fn fetch(&self, p_id: u128) -> &RwLock<Page> {
         if let Some((idx, val)) = self.inner.iter().enumerate().find(|(_, p)| p.read().unwrap().page_id == Some(p_id)) {
             let mut keeper = self.keeper.lock().unwrap();
             keeper.fetch_hook(idx);
@@ -143,6 +157,25 @@ impl BuffInner<RwLock<Page>> for BufferInner<RwLock<Page>> {
     }
 
     fn iter(&self) -> Iter<'_, RwLock<Page>> {
+        self.data.iter()
+    }
+}
+
+impl BuffInner<RwLock<Option<Box<dyn Table + Send + Sync>>>> for BufferInner<RwLock<Option<Box<dyn Table + Send + Sync>>>> {
+    type Item = Option<Box<dyn Table + Send + Sync>>;
+
+    fn add(&self, idx: usize,  table: Self::Item) -> &RwLock<Option<Box<dyn Table + Send + Sync>>> {
+        let mut t = self.data[idx].write().unwrap();
+        *t = table;
+        &self.data[idx]
+    }
+
+    fn remove(&self, idx: usize) {
+        let mut t = self.data[idx].write().unwrap();
+        *t = None;
+    }
+
+    fn iter(&self) -> Iter<'_, RwLock<Option<Box<dyn Table + Send + Sync>>>> {
         self.data.iter()
     }
 }

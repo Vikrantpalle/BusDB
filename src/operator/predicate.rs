@@ -1,4 +1,6 @@
-use crate::{buffer::tuple::{DatumTypes, Table, File, Tuple, Hash}, error::Error};
+use std::sync::Arc;
+
+use crate::{buffer::tuple::{DatumTypes, RowTable, Table, Tuple, Hash, Schema}, error::Error, storage::folder::Folder};
 
 
 #[derive(Debug, PartialEq, Clone)]
@@ -12,17 +14,9 @@ impl Field {
         Self { table: table.to_string(), col:col.to_string() }
     }
 
-    pub fn get_type(&self) -> Result<DatumTypes, Error> {
-        let t = Table::new(&self.table)?;
+    pub fn get_type(&self, f: Arc<Folder>) -> Result<DatumTypes, Error> {
+        let t = RowTable::new(Arc::clone(&f), &self.table)?;
         t.get_schema().iter().find(|(col, _)| col == &(self.table.clone() + "." + &self.col)).map(|(_, typ)| typ.clone()).ok_or(Error::ColumnDoesNotExist)
-    }
-
-    pub fn generate_hash(&self) -> Result<impl Fn(&Tuple) -> u16, Error> {
-        let t = Table::new(&self.table)?;
-        let idx = t.get_schema().iter().enumerate().find(|(_, (col, _))| col == &(self.table.clone() + "." + &self.col)).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)?;
-        Ok(move |tuple: &Tuple| {
-            tuple[idx].hash()
-        })
     }
 }
 
@@ -37,8 +31,18 @@ impl Equal {
         Self { l, r }
     }
 
-    pub fn generate_hashes(&self) -> Result<(impl Fn(&Tuple) -> u16, impl Fn(&Tuple) -> u16), Error> {
-        Ok((self.l.generate_hash()?, self.r.generate_hash()?))
+    pub fn generate_hashes(&self, f: Arc<Folder>, schema: &Schema) -> Result<(impl Fn(&Tuple) -> u16, impl Fn(&Tuple) -> u16), Error> {
+        let l_len = RowTable::new(Arc::clone(&f), &self.l.table)?.get_schema().len();
+        let l_idx = schema.iter().enumerate().find(|(_, (col, _))| col == &(self.l.table.clone() + "." + &self.l.col)).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)?;
+        let r_idx = schema.iter().enumerate().find(|(_, (col, _))| col == &(self.r.table.clone() + "." + &self.r.col)).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)? - l_len;
+        Ok((
+            move |tuple: &Tuple| {
+                tuple[l_idx].hash()
+            },
+            move |tuple: &Tuple| {
+                tuple[r_idx].hash()
+            }
+        ))
     }
 }
 
@@ -48,9 +52,9 @@ pub enum Predicate {
 }
 
 impl Predicate {
-    pub fn generate_hashes(&self) -> Result<(impl Fn(&Tuple) -> u16, impl Fn(&Tuple) -> u16), Error> {
+    pub fn generate_hashes(&self, f: Arc<Folder>, schema: &Schema) -> Result<(impl Fn(&Tuple) -> u16, impl Fn(&Tuple) -> u16), Error> {
         match self {
-            Self::Equal(e) => e.generate_hashes()
+            Self::Equal(e) => e.generate_hashes(Arc::clone(&f), schema)
         }
     }
 }

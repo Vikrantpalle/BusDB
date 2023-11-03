@@ -1,9 +1,13 @@
-use std::{fs::{OpenOptions, File, remove_file}, io::Write};
+use std::{fs::{OpenOptions, File, remove_file, rename}, io::Write};
 
 use super::{BASE_PATH, Block, DATSIZ};
 
 pub fn create_file(file_name: &str) -> Result<File, std::io::Error> {
     File::create(BASE_PATH.to_owned()+"/"+file_name)
+}
+
+pub fn rename_file(from: &str, to: &str) -> Result<(), std::io::Error> {
+    rename(BASE_PATH.to_owned()+"/"+from, BASE_PATH.to_owned()+"/"+to)
 }
 
 pub fn open_file(file_name: &str) -> Result<File, std::io::Error> {

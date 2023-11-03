@@ -1,17 +1,17 @@
-use std::ptr;
 use std::sync::Arc;
 
-use crate::buffer::tuple::{TableIter, Tuple, Table, Schema, Operator, File, ClockBuffer};
+use crate::buffer::tuple::{TableIter, Tuple, RowTable, Schema, Operator, Table, PageBuffer};
 
 use crate::index::hash_table::{HashTable, Hash, HashIter};
+use crate::storage::folder::Folder;
 
 use self::predicate::Predicate;
 
 pub mod predicate;
 
 pub struct Select {
-    t: Table,
-    buf: Arc<ClockBuffer>,
+    t: RowTable,
+    buf: Arc<PageBuffer>,
     pred: fn(&Tuple) -> bool
 }
 
@@ -28,12 +28,12 @@ impl IntoIterator for Select {
 
 pub struct SelectIter {
     schema: Schema,
-    iter: TableIter<Table>,
+    iter: TableIter<RowTable>,
     pred: fn(&Tuple) -> bool
 }
 
 impl Select {
-    pub fn new(t: Table, buf: Arc<ClockBuffer>, pred: fn(&Tuple) -> bool) -> Self {
+    pub fn new(t: RowTable, buf: Arc<PageBuffer>, pred: fn(&Tuple) -> bool) -> Self {
         Select { t, buf, pred }
     }
 
@@ -65,7 +65,7 @@ impl Iterator for SelectIter {
 
 pub struct Project {
     t: Box<dyn Operator>,
-    _buf: Arc<ClockBuffer>,
+    _buf: Arc<PageBuffer>,
     cols: Vec<String>
 }
 
@@ -92,7 +92,7 @@ impl IntoIterator for Project {
 }
 
 impl Project {
-    pub fn new(t: impl Operator + 'static, buf: Arc<ClockBuffer>, cols: Vec<String>) -> Self {
+    pub fn new(t: impl Operator + 'static, buf: Arc<PageBuffer>, cols: Vec<String>) -> Self {
         Project { t: Box::new(t), _buf: buf, cols }
     }
 
@@ -126,7 +126,8 @@ impl Iterator for ProjectIter {
 pub struct Join {
     l: Box<dyn Operator>,
     r: Box<dyn Operator>,
-    buf: Arc<ClockBuffer>,
+    f: Arc<Folder>,
+    buf: Arc<PageBuffer>,
     pred: Predicate
 }
 
@@ -139,8 +140,8 @@ pub struct JoinIter {
 }
 
 impl Join {
-    pub fn new(l: Box<dyn Operator>, r: Box<dyn Operator>, buf: Arc<ClockBuffer>, pred: Predicate) -> Self {
-        Join { l, r, buf, pred }
+    pub fn new(l: Box<dyn Operator>, r: Box<dyn Operator>, buf: Arc<PageBuffer>, f: Arc<Folder>, pred: Predicate) -> Self {
+        Join { l, r, buf, f, pred }
     }
 
     fn get_schema(&self) -> Schema {
@@ -156,23 +157,13 @@ impl IntoIterator for Join {
     type IntoIter = JoinIter;
 
     fn into_iter(mut self) -> Self::IntoIter {
-        let schema = self.get_schema();
-        // ! remove hardcode
-        let h_id = 10;
-        HashTable::create(h_id, self.l.get_schema());
-        let mut h = HashTable::new(h_id);
-        let (l_hash, r_hash) = self.pred.generate_hashes().unwrap();
+        let schema = self.get_schema();   
+        let mut h = HashTable::create(Arc::clone(&self.f), "hash", self.l.get_schema()).unwrap();
+        let (l_hash, r_hash) = self.pred.generate_hashes(Arc::clone(&self.f), &schema).unwrap();
         while let Some(t) = self.l.next() {
             h.insert( l_hash(&t), t, Arc::clone(&self.buf)).unwrap();
         }
-        JoinIter { schema, h: TableIter { block_num: None, buf: Arc::clone(&self.buf), tup_idx: 0, table: h, page: ptr::null_mut(), on_page_end: |i| {
-            let page = unsafe { i.page.as_ref().unwrap().read().unwrap() };
-            if !page.has_next() { return true;}
-            i.block_num = Some(page.get_next().unwrap() as u64);
-            drop(page);
-            i.tup_idx = 0;
-            false 
-        }  }, cur_r: None, r: self.r, r_hash: Box::new(r_hash) }
+        JoinIter { schema, h: TableIter::new(Arc::clone(&self.buf), h), cur_r: None, r: self.r, r_hash: Box::new(r_hash) }
     }
 }
 
@@ -210,16 +201,16 @@ mod tests {
 
     use std::sync::Arc;
 
-    use crate::{buffer::{tuple::{Table, DatumTypes, Tuple, Datum, TupleOps}, Buffer}, operator::{Project, predicate::{Predicate, Equal, Field}}};
+    use crate::{buffer::tuple::{RowTable, DatumTypes, Tuple, Datum, TupleOps, PageBuffer}, operator::{Project, predicate::{Predicate, Equal, Field}}, storage::folder::Folder};
 
     use super::{Select, Join};
 
     #[test]
     fn test_select() {
-        let t_id = "test_select".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        let mut t = Table::new(&t_id).unwrap();
-        let buf = Arc::new(Buffer::new(1));
+        let id = "select";
+        let f = Arc::new(Folder::new().unwrap());
+        let mut t = RowTable::create(f, id.to_string(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let buf = Arc::new(PageBuffer::new(1));
         let mut tuple;
         let mut res: Vec<Tuple> = Vec::new();
         for i in 0..100 {
@@ -239,9 +230,9 @@ mod tests {
     #[test]
     fn test_project() {
         let t_id = "test_project".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        let mut t = Table::new(&t_id).unwrap();
-        let buf = Arc::new(Buffer::new(1));
+        let f = Arc::new(Folder::new().unwrap());
+        let mut t = RowTable::create(f, t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let buf = Arc::new(PageBuffer::new(1));
         let mut tuple;
         let mut res: Vec<Tuple> = Vec::new();
         for i in 0..100 {
@@ -262,20 +253,14 @@ mod tests {
     #[test]
     fn test_join() {
         let t_id = "test_join".to_string();
-        Table::create(t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        Table::create(t_id.clone()+"a", vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        let mut t = Table::new(&t_id).unwrap();
-        let buf = Arc::new(Buffer::new(10));
+        let f = Arc::new(Folder::new().unwrap());
+        let mut t = RowTable::create(Arc::clone(&f), t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t2 = RowTable::create(Arc::clone(&f), t_id.clone()+"a", vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let buf = Arc::new(PageBuffer::new(10));
         let mut tuple;
         for i in 0..1 {
             tuple = vec![Datum::Int(i), Datum::Int(i+1)];
             t.add(Arc::clone(&buf), tuple.to_vec()).unwrap();
-        }
-
-        let mut t2 = Table::new(&(t_id.clone()+"a")).unwrap();
-        let mut tuple;
-        for i in 0..1 {
-            tuple = vec![Datum::Int(i), Datum::Int(i+1)];
             t2.add(Arc::clone(&buf), tuple.to_vec()).unwrap();
         }
         let s1 = Select::new(t, Arc::clone(&buf), |_| {true}).into_iter();
@@ -283,6 +268,7 @@ mod tests {
             Box::new(s1),
             Box::new(Select::new(t2, Arc::clone(&buf), |_| {true}).into_iter()),
             buf,
+            Arc::clone(&f),
             Predicate::Equal(Equal::new(Field::new(&t_id, "a"), Field::new(&(t_id.clone()+"a"), "a")))
         ).into_iter();
         assert_eq!(s_op.collect::<Vec<Vec<Datum>>>(), vec![vec![Datum::Int(0),Datum::Int(1),Datum::Int(0),Datum::Int(1)]]);
