@@ -38,7 +38,7 @@ impl Select {
     }
 
     fn get_schema(&self) -> Schema {
-        self.t.get_schema()
+        self.t.schema()
     }
 }
 
@@ -158,7 +158,7 @@ impl IntoIterator for Join {
 
     fn into_iter(mut self) -> Self::IntoIter {
         let schema = self.get_schema();   
-        let mut h = HashTable::create(Arc::clone(&self.f), "hash", self.l.get_schema()).unwrap();
+        let mut h = HashTable::create_temp(Arc::clone(&self.f), self.l.get_schema()).unwrap();
         let (l_hash, r_hash) = self.pred.generate_hashes(Arc::clone(&self.f), &schema).unwrap();
         while let Some(t) = self.l.next() {
             h.insert( l_hash(&t), t, Arc::clone(&self.buf)).unwrap();
@@ -201,7 +201,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use crate::{buffer::tuple::{RowTable, DatumTypes, Tuple, Datum, TupleOps, PageBuffer}, operator::{Project, predicate::{Predicate, Equal, Field}}, storage::folder::Folder};
+    use crate::{buffer::tuple::{RowTable, DatumTypes, Tuple, Datum, TupleOps, PageBuffer, Table}, operator::{Project, predicate::{Predicate, Equal, Field}}, storage::folder::Folder};
 
     use super::{Select, Join};
 
@@ -209,7 +209,7 @@ mod tests {
     fn test_select() {
         let id = "select";
         let f = Arc::new(Folder::new().unwrap());
-        let mut t = RowTable::create(f, id.to_string(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = RowTable::create(f, id, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
         let buf = Arc::new(PageBuffer::new(1));
         let mut tuple;
         let mut res: Vec<Tuple> = Vec::new();
@@ -231,7 +231,7 @@ mod tests {
     fn test_project() {
         let t_id = "test_project".to_string();
         let f = Arc::new(Folder::new().unwrap());
-        let mut t = RowTable::create(f, t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = RowTable::create(f, &t_id, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
         let buf = Arc::new(PageBuffer::new(1));
         let mut tuple;
         let mut res: Vec<Tuple> = Vec::new();
@@ -254,8 +254,8 @@ mod tests {
     fn test_join() {
         let t_id = "test_join".to_string();
         let f = Arc::new(Folder::new().unwrap());
-        let mut t = RowTable::create(Arc::clone(&f), t_id.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        let mut t2 = RowTable::create(Arc::clone(&f), t_id.clone()+"a", vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t = RowTable::create(Arc::clone(&f), &t_id, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        let mut t2 = RowTable::create(Arc::clone(&f), &(t_id.to_string()+"a"), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
         let buf = Arc::new(PageBuffer::new(10));
         let mut tuple;
         for i in 0..1 {

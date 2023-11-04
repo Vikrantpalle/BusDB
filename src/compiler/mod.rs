@@ -24,7 +24,7 @@ pub fn parse_create_table(input: &str) -> IResult<&str, impl '_ + Fn(Arc<PageBuf
             }
         }).collect();
         err?;
-        RowTable::create(Arc::clone(&f), name.to_string(), schema)?;
+        RowTable::create(Arc::clone(&f), name, schema)?;
         RowTable::new(Arc::clone(&f), name)?;
         Ok(())
     }))
@@ -46,7 +46,7 @@ pub fn parse_insert(input: &str) -> IResult<&str, impl '_ + Fn(Arc<PageBuffer>, 
     
     Ok((input, move |buf: Arc<PageBuffer>, f: Arc<Folder>| {
         let mut table = RowTable::new(Arc::clone(&f), name)?;
-        let schema = table.get_schema();
+        let schema = table.schema();
         let tup = schema.iter().zip(values.iter()).map(|((_, typ), inp)| {
             match typ {
                 DatumTypes::Int => Datum::Int((*inp).parse::<i32>().unwrap()),

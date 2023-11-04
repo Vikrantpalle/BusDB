@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{operator::{Select, Project, Join}, buffer::tuple::{RowTable, Operator, PageBuffer}, error::Error, storage::folder::Folder};
+use crate::{operator::{Select, Project, Join}, buffer::tuple::{RowTable, Operator, PageBuffer, Table}, error::Error, storage::folder::Folder};
 
 use super::ast::Node;
 
@@ -34,7 +34,7 @@ impl Generate for Node {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{storage::folder::Folder, buffer::tuple::{RowTable, DatumTypes, TupleOps, Datum, Tuple, PageBuffer}, compiler::ast::Node, operator::predicate::{Equal, Field, Predicate}};
+    use crate::{storage::folder::Folder, buffer::tuple::{RowTable, DatumTypes, TupleOps, Datum, Tuple, PageBuffer, Table}, compiler::ast::Node, operator::predicate::{Equal, Field, Predicate}};
 
     use super::Generate;
 
@@ -47,9 +47,9 @@ mod tests {
         let buf = Arc::new(PageBuffer::new(10));
         Folder::create().unwrap();
         let f = Arc::new(Folder::new().unwrap());
-        let mut t1 = RowTable::create(Arc::clone(&f), a.to_string(), vec![("id".into(), DatumTypes::Int)]).unwrap();
-        let mut t2 = RowTable::create(Arc::clone(&f),  b.to_string(), vec![("id".into(), DatumTypes::Int)]).unwrap();
-        let mut t3 = RowTable::create(Arc::clone(&f), c.to_string(), vec![("id".into(), DatumTypes::Int)]).unwrap();
+        let mut t1 = RowTable::create(Arc::clone(&f), &a, vec![("id".into(), DatumTypes::Int)]).unwrap();
+        let mut t2 = RowTable::create(Arc::clone(&f),  &b, vec![("id".into(), DatumTypes::Int)]).unwrap();
+        let mut t3 = RowTable::create(Arc::clone(&f), &c, vec![("id".into(), DatumTypes::Int)]).unwrap();
         t1.add(Arc::clone(&buf), vec![Datum::Int(10)]).unwrap();
         t1.add(Arc::clone(&buf), vec![Datum::Int(20)]).unwrap();
         t2.add(Arc::clone(&buf), vec![Datum::Int(10)]).unwrap();

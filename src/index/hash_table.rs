@@ -1,6 +1,6 @@
 use std::{sync::Arc, ptr};
 
-use crate::{storage::{utils::append_block, folder::{Folder, TableInode}, disk_manager::SET_64}, buffer::{tuple::{Tuple, TableIter, Table, Schema, PageBuffer}, Buff}, error::Error};
+use crate::{storage::{utils::{append_block, delete_file}, folder::{Folder, TableInode}, disk_manager::SET_64}, buffer::{tuple::{Tuple, TableIter, Table, Schema, PageBuffer}, Buff}, error::Error};
 use serde::{Serialize, Deserialize};
 
 const KEYNO: usize = 1 << 15;
@@ -8,13 +8,22 @@ const KEYNO: usize = 1 << 15;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct HashTable {
     inode: TableInode,
+    temp: bool,
     num_blocks: u32,
     pub keys: Vec<Option<u32>>,
     schema: Schema
 }
 
+impl Drop for HashTable {
+    fn drop(&mut self) { 
+        if self.temp() { 
+            delete_file(&self.inode.data_ino.to_string()).unwrap();
+        }
+    }
+}
+
 impl Table for HashTable {
-    fn get_inode(&self) -> TableInode {
+    fn inode(&self) -> TableInode {
         self.inode.clone()
     }
 
@@ -22,12 +31,32 @@ impl Table for HashTable {
         self.inode = inode
     }
 
-    fn get_schema(&self) -> Schema {
+    fn temp(&self) -> bool {
+        self.temp
+    }
+
+    fn set_temp(&mut self, temp: bool) {
+        self.temp = temp
+    }
+
+    fn schema(&self) -> Schema {
         self.schema.to_vec()
     }
 
     fn set_schema(&mut self, schema: Schema) {
         self.schema = schema
+    }
+
+    fn create(f: Arc<Folder>, name: &str, schema: Schema) -> Result<Self, Error> {
+        Ok(f.create_table(name, schema)?)
+    }
+
+    fn create_temp(f: Arc<Folder>, schema: Schema) -> Result<Self, Error> {
+        Ok(f.create_temp_table(schema)?)
+    }
+
+    fn new(f: Arc<Folder>, name: &str) -> Result<Self, Error> {
+        Ok((f.fetch_table(&name)?).ok_or(Error::TableDoesNotExist)?)
     }
 }
 
@@ -35,6 +64,7 @@ impl Default for HashTable {
     fn default() -> Self {
         HashTable {
             inode: TableInode::new(0, 0),
+            temp: false,
             num_blocks: 0,
             keys: vec![None; KEYNO],
             schema: vec![]
@@ -44,20 +74,12 @@ impl Default for HashTable {
 
 impl HashTable {
 
-    pub fn create(f: Arc<Folder>, name: &str, schema: Schema) -> Result<Self, Error> {
-        Ok(f.create_table(name, schema)?)
-    }
-
-    pub fn new(name: String) -> Result<Self, Error> {
-        let f = Folder::new()?;
-        Ok((f.fetch_table(&name)?).ok_or(Error::TableDoesNotExist)?)
-    }
-
     pub fn append_block(&mut self) -> Result<(), Error> {
         append_block(&self.inode.data_ino.to_string()).unwrap();
         self.num_blocks += 1;
         Ok(())
     }
+
 }
 
 pub trait HashIter {
@@ -152,7 +174,7 @@ impl Hash for HashTable {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{buffer::tuple::{DatumTypes, Datum, PageBuffer}, storage::folder::Folder};
+    use crate::{buffer::tuple::{DatumTypes, Datum, PageBuffer, Table}, storage::folder::Folder};
 
     use super::{HashTable, Hash};
 

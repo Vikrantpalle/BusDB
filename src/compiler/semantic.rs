@@ -12,7 +12,7 @@ pub trait TypeCheck {
 impl TypeCheck for Node {
     fn check(&self, f: Arc<Folder>) -> Result<(), Error> {
         let t = RowTable::new(Arc::clone(&f), &self.table)?;
-        if !self.cols.iter().all(|inp| t.get_schema().iter().find(|(col, _)| col == inp).is_some()) {return Err(Error::ColumnDoesNotExist);}
+        if !self.cols.iter().all(|inp| t.schema().iter().find(|(col, _)| col == inp).is_some()) {return Err(Error::ColumnDoesNotExist);}
         if self.pred.is_some() { self.pred.as_ref().unwrap().check(Arc::clone(&f))?; }
         if self.join.is_some() { self.join.as_ref().unwrap().check(Arc::clone(&f))?; }
         return Ok(())
@@ -41,7 +41,7 @@ impl TypeCheck for Predicate {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{compiler::{ast::Node, semantic::TypeCheck}, buffer::tuple::{RowTable, DatumTypes}, storage::folder::Folder, operator::predicate::{Equal, Field, Predicate}};
+    use crate::{compiler::{ast::Node, semantic::TypeCheck}, buffer::tuple::{RowTable, DatumTypes, Table}, storage::folder::Folder, operator::predicate::{Equal, Field, Predicate}};
 
 
     #[test]
@@ -50,8 +50,8 @@ mod tests {
         let a = "a".to_string();
         let b = "b".to_string();
         let f = Arc::new(Folder::new().unwrap());
-        RowTable::create(Arc::clone(&f), a.clone(), vec![("id".into(), DatumTypes::Int)]).unwrap();
-        RowTable::create(Arc::clone(&f), b.clone(), vec![("id".into(), DatumTypes::Int)]).unwrap();
+        RowTable::create(Arc::clone(&f), &a, vec![("id".into(), DatumTypes::Int)]).unwrap();
+        RowTable::create(Arc::clone(&f), &b, vec![("id".into(), DatumTypes::Int)]).unwrap();
         let b = Node { table: b.clone(), cols: vec![], pred: Some(Predicate::Equal(Equal { l: Field { table: a.to_string(), col: "id".into() }, r: Field { table: b.to_string(), col: "id".into() }})), join: None};
         let a = Node { table: a.clone(), cols: vec![], pred: None, join: Some(Box::new(b))};
         a.check(Arc::clone(&f)).unwrap();

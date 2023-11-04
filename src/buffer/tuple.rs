@@ -2,7 +2,7 @@ use std::{io::Write, sync::{RwLock, Arc}, fmt::Debug, ptr};
 
 use serde::{Serialize, Deserialize};
 
-use crate::{storage::{utils::{create_file, append_block}, folder::{Folder, TableInode}, disk_manager::SET_64}, error::{Error, PageError}};
+use crate::{storage::{utils::{create_file, append_block, delete_file}, folder::{Folder, TableInode}, disk_manager::SET_64}, error::{Error, PageError}};
 
 use super::{Buff, page::{TupleCRUD, Page}, Buffer, BufferInner, Clock};
 
@@ -89,21 +89,35 @@ impl DatumSerde for DatumTypes {
 }
 
 pub trait Table {
-    fn get_inode(&self) -> TableInode;
+    fn inode(&self) -> TableInode;
     fn set_inode(&mut self, inode: TableInode);
-    fn get_schema(&self) -> Schema;
+    fn temp(&self) -> bool;
+    fn set_temp(&mut self, temp: bool);
+    fn schema(&self) -> Schema;
     fn set_schema(&mut self, schema: Schema);
+    fn create(f: Arc<Folder>, name: &str, schema: Schema) -> Result<Self, Error> where Self: Sized;
+    fn create_temp(f: Arc<Folder>, schema: Schema) -> Result<Self, Error> where Self: Sized;
+    fn new(f: Arc<Folder>, name: &str) -> Result<Self, Error> where Self: Sized;
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RowTable {
     pub inode: TableInode,
+    pub temp: bool,
     pub num_blocks: u64,
     pub schema: Schema
 }
 
+impl Drop for RowTable {
+    fn drop(&mut self) {
+        if self.temp() { 
+            delete_file(&self.inode.data_ino.to_string()).unwrap();
+        }
+    }
+}
+
 impl Table for RowTable {
-    fn get_inode(&self) -> TableInode {
+    fn inode(&self) -> TableInode {
         self.inode.clone()
     }
 
@@ -111,12 +125,32 @@ impl Table for RowTable {
         self.inode = inode;
     }
 
-    fn get_schema(&self) -> Schema {
+    fn temp(&self) -> bool {
+        self.temp
+    }
+
+    fn set_temp(&mut self, temp: bool) {
+        self.temp = temp
+    }
+
+    fn schema(&self) -> Schema {
         self.schema.to_vec()
     }
 
     fn set_schema(&mut self, schema: Schema) {
         self.schema = schema
+    }
+
+    fn create(f: Arc<Folder>, name: &str, schema: Schema) -> Result<Self, Error> {
+        Ok(f.create_table(name, schema)?)
+    }
+
+    fn create_temp(f: Arc<Folder>, schema: Schema) -> Result<Self, Error> {
+        Ok(f.create_temp_table(schema)?)
+    }
+
+    fn new(f: Arc<Folder>, name: &str) -> Result<Self, Error> {
+        Ok((f.fetch_table(&name)?).ok_or(Error::TableDoesNotExist)?)
     }
 }
 
@@ -124,19 +158,10 @@ impl Default for RowTable {
     fn default() -> Self {
         RowTable {
             inode: TableInode::new(0, 0),
+            temp: false,
             num_blocks: 0,
             schema: vec![]
         }
-    }
-}
-
-impl RowTable {
-    pub fn create(f: Arc<Folder>, name: String, schema: Schema) -> Result<Self, Error> {
-        Ok(f.create_table::<Self>(&name, schema)?)
-    }
-
-    pub fn new(f: Arc<Folder>, name: &str) -> Result<Self, Error> {
-        Ok((f.fetch_table(&name)?).ok_or(Error::TableDoesNotExist)?)
     }
 }
 
@@ -211,17 +236,17 @@ impl<T: Table> Iterator for TableIter<T> {
     fn next(&mut self) -> Option<Self::Item>{
         let Some(block_num) = self.block_num else { return None; };
         if self.page.is_null() {
-            self.page = self.buf.fetch(((self.table.get_inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) as *const RwLock<Page>;
+            self.page = self.buf.fetch(((self.table.inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) as *const RwLock<Page>;
         } else {
             let page_id;
             let page = unsafe {self.page.as_ref().unwrap().read().unwrap()};
             page_id = page.page_id;
             drop(page);
-            if page_id != Some(((self.table.get_inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) {
-                self.page = self.buf.fetch(((self.table.get_inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) as *const RwLock<Page>;
+            if page_id != Some(((self.table.inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) {
+                self.page = self.buf.fetch(((self.table.inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) as *const RwLock<Page>;
             }
         }
-        let tup = unsafe {PageIter::iter(self.page.as_ref().unwrap(), &self.table.get_schema()).nth(self.tup_idx as usize)};
+        let tup = unsafe {PageIter::iter(self.page.as_ref().unwrap(), &self.table.schema()).nth(self.tup_idx as usize)};
         match tup {
             Ok(Some(t)) => {
                 self.tup_idx += 1;
@@ -233,7 +258,7 @@ impl<T: Table> Iterator for TableIter<T> {
             },
             Err(_) => {
                 if (self.on_page_end)(self) { return None; }
-                self.page = self.buf.fetch(((self.table.get_inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) as *const RwLock<Page>;
+                self.page = self.buf.fetch(((self.table.inode().data_ino as u128) << 64) | (block_num & SET_64) as u128) as *const RwLock<Page>;
                 self.next()
             }
         }
@@ -307,21 +332,21 @@ mod tests {
     fn test_table_create() {
         let t_name = "test_table_create".to_string();
         let f = Arc::new(Folder::new().unwrap());
-        let t = RowTable::create(Arc::clone(&f), t_name.clone(), vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
-        assert_eq!(t, RowTable { inode: t.get_inode(), num_blocks: 0, schema: vec![(t_name.clone()+"."+"a", DatumTypes::Int), (t_name.clone()+"."+"b", DatumTypes::Int)]});
+        let t = RowTable::create(Arc::clone(&f), &t_name, vec![("a".into(), DatumTypes::Int), ("b".into(), DatumTypes::Int)]).unwrap();
+        assert_eq!(t, RowTable { inode: t.inode(), temp: false, num_blocks: 0, schema: vec![(t_name.clone()+"."+"a", DatumTypes::Int), (t_name.clone()+"."+"b", DatumTypes::Int)]});
     }
 
     #[test]
     fn test_page_itr_nth() {
         let id = "page_itr_nth".to_string();
         let f = Arc::new(Folder::new().unwrap());
-        let mut t = RowTable::create(Arc::clone(&f), id.clone(), vec![("a".to_string(), DatumTypes::Int), ("b".to_string(), DatumTypes::Int)]).unwrap();
+        let mut t = RowTable::create(Arc::clone(&f), &id, vec![("a".to_string(), DatumTypes::Int), ("b".to_string(), DatumTypes::Int)]).unwrap();
         let buf = Arc::new(PageBuffer::new(10));
         let mut tuple = vec![Datum::Int(10), Datum::Int(20)];
         t.add(Arc::clone(&buf), tuple).unwrap();
         tuple = vec![Datum::Int(10), Datum::Int(30)];
         t.add(Arc::clone(&buf), tuple).unwrap();
-        let bind = buf.fetch((t.get_inode().data_ino as u128) << 64);
+        let bind = buf.fetch((t.inode().data_ino as u128) << 64);
         let mut itr = PageIter::iter(bind, &t.schema);
 
         assert_eq!(itr.nth(1).unwrap(), Some(vec![Datum::Int(10), Datum::Int(30)]));

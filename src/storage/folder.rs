@@ -56,6 +56,16 @@ impl Folder {
         Ok(inode)
     }
 
+    pub fn create_temp_table<T: Table + Default + Serialize>(&self, schema: Schema) -> Result<T, std::io::Error> {
+        let data_ino = Self::create_file()?;
+        let mut table = T::default();
+        let schema = schema.into_iter().map(|t| (data_ino.to_string()+"."+&t.0, t.1)).collect();
+        table.set_inode(TableInode::new(0, data_ino));
+        table.set_schema(schema);
+        table.set_temp(true);
+        Ok(table)
+    }
+
     pub fn create_table<T: Table + Default + Serialize>(&self, name: &str, schema: Schema) -> Result<T, std::io::Error> {
         let data_ino = Self::create_file()?;
         let head_ino = Self::create_file()?;
@@ -63,6 +73,7 @@ impl Folder {
         let schema = schema.into_iter().map(|t| (name.to_owned()+"."+&t.0, t.1)).collect();
         table.set_inode(TableInode::new(head_ino, data_ino));
         table.set_schema(schema);
+        table.set_temp(false);
         let mut f = write_file(&head_ino.to_string())?;
         f.write_all(&bincode::serialize(&table).unwrap())?;
         let mut tables = self.tables.write().unwrap();

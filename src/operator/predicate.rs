@@ -16,7 +16,7 @@ impl Field {
 
     pub fn get_type(&self, f: Arc<Folder>) -> Result<DatumTypes, Error> {
         let t = RowTable::new(Arc::clone(&f), &self.table)?;
-        t.get_schema().iter().find(|(col, _)| col == &(self.table.clone() + "." + &self.col)).map(|(_, typ)| typ.clone()).ok_or(Error::ColumnDoesNotExist)
+        t.schema().iter().find(|(col, _)| col == &(self.table.clone() + "." + &self.col)).map(|(_, typ)| typ.clone()).ok_or(Error::ColumnDoesNotExist)
     }
 }
 
@@ -32,7 +32,7 @@ impl Equal {
     }
 
     pub fn generate_hashes(&self, f: Arc<Folder>, schema: &Schema) -> Result<(impl Fn(&Tuple) -> u16, impl Fn(&Tuple) -> u16), Error> {
-        let l_len = RowTable::new(Arc::clone(&f), &self.l.table)?.get_schema().len();
+        let l_len = RowTable::new(Arc::clone(&f), &self.l.table)?.schema().len();
         let l_idx = schema.iter().enumerate().find(|(_, (col, _))| col == &(self.l.table.clone() + "." + &self.l.col)).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)?;
         let r_idx = schema.iter().enumerate().find(|(_, (col, _))| col == &(self.r.table.clone() + "." + &self.r.col)).map(|(idx, _)| idx).ok_or(Error::ColumnDoesNotExist)? - l_len;
         Ok((
